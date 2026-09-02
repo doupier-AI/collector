@@ -451,24 +451,21 @@ test("generation failure keeps branch and origin relation, retry completes", asy
   assert.equal(branchView.messages[1].content, "重试后的第一轮研究内容。");
 });
 
-test("deep research without a configured model fails retryably and keeps the origin session", async (t) => {
+test("deep research without a configured model is rejected before creating an origin task", async (t) => {
   const harness = await createHarness();
   t.after(() => harness.close());
   const { session, assistantMessage } = await createSessionWithAnswer(harness);
   const created = await createSelectionOn(harness, session.id, anchorForSelection(assistantMessage.id, 0, "本地优先研究"));
 
   const response = await postJson(harness.base, harness.token, `/v1/research-selections/${created.selection.id}/deep-research`, { mode: "session", direction: "研究方向" }, randomUUID());
-  const accepted = await response.json() as { session: { id: string; originSelectionId?: string }; task: { id: string } };
-  const failed = await waitForResearchTask(harness.base, harness.token, accepted.task.id, "failed");
-  assert.equal(failed.error?.code, "model_not_configured");
-  assert.equal(failed.retryable, true);
-  // 来源会话与来源关系保留
-  const kept = harness.store.getResearchSession(accepted.session.id);
-  assert.equal(kept?.originSelectionId, accepted.session.originSelectionId);
-  assert.ok(harness.store.getResearchSelection(accepted.session.originSelectionId!));
+  assert.equal(response.status, 400);
+  assert.match(await response.text(), /model_route_unavailable/);
+  assert.ok(harness.store.getResearchSelection(created.selection.id), "来源选区不受失败提交影响");
 
   harness.service.research.setProvider(recordingProvider().provider);
-  await fetch(`${harness.base}/v1/research-tasks/${accepted.task.id}/retry`, { method: "POST", headers: headers(harness.token) });
+  const retried = await postJson(harness.base, harness.token, `/v1/research-selections/${created.selection.id}/deep-research`, { mode: "session", direction: "研究方向" }, randomUUID());
+  assert.equal(retried.status, 202);
+  const accepted = await retried.json() as { task: { id: string } };
   await waitForResearchTask(harness.base, harness.token, accepted.task.id, "completed");
 });
 
@@ -561,10 +558,10 @@ test("branch follow-up stays inside the branch and main chat is unaffected", asy
   assert.equal(followUp.outputMessage.branchId, accepted.branch!.id);
   await waitForResearchTask(harness.base, harness.token, followUp.task.id, "completed");
 
-  // 追问不重复注入深入研究上下文，对话范围只包含分支消息
+  // 分支追问冻结原深入研究上下文，同时对话范围只包含分支消息。
   assert.equal(recording.requests.length, 2);
   const followUpRequest = recording.requests[1];
-  assert.equal(followUpRequest.deepResearch, undefined);
+  assert.equal(followUpRequest.deepResearch?.selectionText, "选区如何连接阅读与研究");
   assert.deepEqual(
     followUpRequest.messages.map((message) => message.content),
     ["展开讲讲实践建议"],
@@ -639,17 +636,17 @@ test("node tree endpoint returns flat items with deterministic labels for root a
   const harness = await createHarness({ researchProvider: recordingProvider().provider });
   t.after(() => harness.close());
   const { session, assistantMessage } = await createSessionWithAnswer(harness);
-  await harness.service.updateResearchNodeComposerPreferences(session.id, { allowWebSearch: true, thinkingEnabled: true });
+  await harness.service.updateResearchNodeComposerPreferences(session.id, { webSearchMode: "off", thinkingEnabled: false });
   const exact = "选区如何连接阅读与研究";
   const created = await createSelectionOn(harness, session.id, anchorForSelection(assistantMessage.id, 1, exact));
 
   // 从选区生长一个子节点
   const growth = await postJson(harness.base, harness.token, `/v1/research-selections/${created.selection.id}/nodes`, {}, randomUUID());
   assert.equal(growth.status, 202);
-  const accepted = await growth.json() as { node: { id: string; parentNodeId?: string; originSelectionId?: string; composerPreferences?: { allowWebSearch: boolean; thinkingEnabled: boolean } } };
+  const accepted = await growth.json() as { node: { id: string; parentNodeId?: string; originSelectionId?: string; composerPreferences?: { webSearchMode: "off" | "required"; thinkingEnabled: boolean } } };
   assert.equal(accepted.node.parentNodeId, session.id);
   assert.equal(accepted.node.originSelectionId, created.selection.id);
-  assert.deepEqual(accepted.node.composerPreferences, { allowWebSearch: true, thinkingEnabled: true });
+  assert.deepEqual(accepted.node.composerPreferences, { webSearchMode: "off", thinkingEnabled: false });
 
   const treeResponse = await fetch(`${harness.base}/v1/research-sessions/${session.id}/nodes`, { headers: headers(harness.token) });
   assert.equal(treeResponse.status, 200);
@@ -670,6 +667,28 @@ test("node tree endpoint returns flat items with deterministic labels for root a
 
   // 未知会话返回 404
   assert.equal((await fetch(`${harness.base}/v1/research-sessions/${randomUUID()}/nodes`, { headers: headers(harness.token) })).status, 404);
+});
+
+test("深入研究冻结上下文失效时明确失败，不退化为普通聊天", async (t) => {
+  const harness = await createHarness({ researchProvider: recordingProvider().provider, autoRunResearchTasks: false });
+  t.after(() => harness.close());
+  const { session, assistantMessage } = await createSessionWithAnswer(harness);
+  const created = await createSelectionOn(harness, session.id, anchorForSelection(assistantMessage.id, 1, "选区如何连接阅读与研究"));
+  const response = await postJson(harness.base, harness.token, `/v1/research-selections/${created.selection.id}/deep-research`, { mode: "branch", webSearchMode: "off" }, randomUUID());
+  assert.equal(response.status, 202);
+  const accepted = await response.json() as { task: { id: string } };
+  const task = harness.store.getResearchTask(accepted.task.id)!;
+  assert.ok(task.executionIntent?.deepResearch);
+  await harness.store.saveResearchTaskExecutionIntent(task.id, {
+    ...task.executionIntent!,
+    deepResearch: { ...task.executionIntent!.deepResearch!, selectionId: "missing-selection" },
+  });
+
+  await harness.service.research.processTask(task.id);
+  const failed = harness.store.getResearchTask(task.id)!;
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.error?.code, "deep_research_context_unavailable");
+  assert.equal(harness.store.getResearchMessage(failed.outputMessageId)?.content, "");
 });
 
 test("selection attributed to a child node grows a grandchild, forming a multi-level A-C-D chain", async (t) => {

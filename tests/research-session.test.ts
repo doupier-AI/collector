@@ -183,7 +183,7 @@ test("research API persists an idempotent turn, streams fake-provider events, an
   reopened.close();
 });
 
-test("node preferences, first-turn options, and normalized task thinking persist through the API", async (t) => {
+test("thinking 不受支持时提交前拒绝且不创建半成品任务", async (t) => {
   const provider: ResearchGenerationProvider = {
     provider: "unsupported-thinking-provider",
     model: "unknown-model",
@@ -192,7 +192,7 @@ test("node preferences, first-turn options, and normalized task thinking persist
     },
     async *generate(request) {
       assert.equal(request.thinkingEnabled, false);
-      yield "已按实际模型能力关闭深度思考。";
+      yield "不应生成";
     },
   };
   const harness = await createHarness(provider);
@@ -202,23 +202,21 @@ test("node preferences, first-turn options, and normalized task thinking persist
   const response = await fetch(`${harness.base}/v1/research-nodes/${session.id}/messages`, {
     method: "POST",
     headers: { ...authHeaders(harness.token), "Idempotency-Key": randomUUID() },
-    body: JSON.stringify({ content: "保留偏好", allowWebSearch: true, thinkingEnabled: true }),
+    body: JSON.stringify({ content: "保留偏好", webSearchMode: "off", thinkingEnabled: true }),
   });
-  assert.equal(response.status, 202);
-  const accepted = await response.json() as { task: { id: string; allowWebSearch?: boolean; thinkingEnabled?: boolean } };
-  assert.equal(accepted.task.allowWebSearch, true);
-  assert.equal(accepted.task.thinkingEnabled, false, "任务保存实际路由归一化后的有效值");
-  assert.deepEqual(harness.store.getResearchNode(session.id)?.composerPreferences, { allowWebSearch: true, thinkingEnabled: true });
-  assert.equal(harness.store.listResearchMessages(session.id).length, 2);
+  assert.equal(response.status, 400);
+  assert.match(await response.text(), /thinking_unavailable/);
+  assert.deepEqual(harness.store.getResearchNode(session.id)?.composerPreferences, { webSearchMode: "off", thinkingEnabled: false });
+  assert.equal(harness.store.listResearchMessages(session.id).length, 0, "提交失败不创建半成品消息或任务");
 
   const update = await fetch(`${harness.base}/v1/research-nodes/${session.id}/composer-preferences`, {
     method: "PUT",
     headers: authHeaders(harness.token),
-    body: JSON.stringify({ allowWebSearch: false, thinkingEnabled: true }),
+    body: JSON.stringify({ webSearchMode: "off", thinkingEnabled: true }),
   });
   assert.equal(update.status, 200);
-  const updatedNode = await update.json() as { composerPreferences?: { allowWebSearch: boolean; thinkingEnabled: boolean } };
-  assert.deepEqual(updatedNode.composerPreferences, { allowWebSearch: false, thinkingEnabled: true });
+  const updatedNode = await update.json() as { composerPreferences?: { webSearchMode: "off" | "required"; thinkingEnabled: boolean } };
+  assert.deepEqual(updatedNode.composerPreferences, { webSearchMode: "off", thinkingEnabled: true });
 });
 
 test("research generation persists clean text and independent mention ranges", async (t) => {
@@ -367,7 +365,7 @@ test("concurrent session creation and restart reuse one idempotency key", async 
   reopened.close();
 });
 
-test("missing model preserves input and exposes a retryable failed task", async (t) => {
+test("missing model is rejected at submission and succeeds after configuration", async (t) => {
   const harness = await createHarness();
   t.after(() => harness.close());
   const missingCreationKey = await fetch(`${harness.base}/v1/research-sessions`, {
@@ -387,26 +385,22 @@ test("missing model preserves input and exposes a retryable failed task", async 
     headers: { ...authHeaders(harness.token), "Idempotency-Key": "missing-model-turn" },
     body: JSON.stringify({ content: "即使没有模型也请保存这段输入" }),
   });
-  assert.equal(acceptedResponse.status, 202);
-  const accepted = await acceptedResponse.json() as { task: { id: string } };
-  const failed = await waitForTask(harness.base, harness.token, accepted.task.id, "failed");
-  assert.equal(failed.retryable, true);
-  assert.deepEqual(failed.error, {
-    code: "model_not_configured",
-    message: "未配置可用的 AI 模型。输入已保存，配置模型后可以重试。",
-  });
+  assert.equal(acceptedResponse.status, 400);
+  assert.match(await acceptedResponse.text(), /model_route_unavailable/);
   const view = await harness.service.research.getSession(session.id);
-  assert.equal(view.messages[0].content, "即使没有模型也请保存这段输入");
-  assert.equal(view.messages[1].status, "failed");
+  assert.equal(view.messages.length, 0);
 
   harness.service.research.setProvider({
     provider: "deterministic-retry", model: "fake-retry-1",
     async *generate() { yield "恢复成功"; },
   });
-  const retryResponse = await fetch(`${harness.base}/v1/research-tasks/${accepted.task.id}/retry`, {
-    method: "POST", headers: authHeaders(harness.token), body: "{}",
+  const retryResponse = await fetch(`${harness.base}/v1/research-sessions/${session.id}/messages`, {
+    method: "POST",
+    headers: { ...authHeaders(harness.token), "Idempotency-Key": "configured-model-turn" },
+    body: JSON.stringify({ content: "即使没有模型也请保存这段输入" }),
   });
   assert.equal(retryResponse.status, 202);
+  const accepted = await retryResponse.json() as { task: { id: string } };
   await waitForTask(harness.base, harness.token, accepted.task.id, "completed");
   assert.equal(harness.service.research.getSession(session.id).messages[1].content, "恢复成功");
 });

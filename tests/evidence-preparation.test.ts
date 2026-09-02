@@ -12,7 +12,7 @@ import {
 
 function plan(overrides: Partial<AnswerPlan> = {}): AnswerPlan {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     planId: "plan-206",
     plannerVersion: "answer-planner-v1",
     buildFingerprint: "build:test",
@@ -35,6 +35,7 @@ function plan(overrides: Partial<AnswerPlan> = {}): AnswerPlan {
       conflictHandling: "preserve_for_evidence_chain",
     },
     uncertaintyHandling: { action: "proceed", reasons: [] },
+    presentation: { mode: "compact", preferredBlocks: [] },
     completionContract: { machineChecks: [], semanticCriteria: [] },
     ...overrides,
   };

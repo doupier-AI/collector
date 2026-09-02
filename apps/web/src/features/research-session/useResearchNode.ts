@@ -304,7 +304,7 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
 
   const updateComposerPreferences = useCallback(async (next: ComposerPreferences): Promise<void> => {
     const generation = ++preferenceGenerationRef.current;
-    let previous = { ...DEFAULT_COMPOSER_PREFERENCES };
+    let previous: ComposerPreferences = { ...DEFAULT_COMPOSER_PREFERENCES };
     setComposerPreferenceError(null);
     setState((current) => {
       if (current.kind !== "ready") return current;

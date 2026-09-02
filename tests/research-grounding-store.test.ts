@@ -511,11 +511,10 @@ test("独立最终写作暂停后重新取证并清空旧正文，来源和正�
   assert.equal(harness.store.listResearchCitationsForMessages([turn.task.outputMessageId])[0]?.location?.exact, "正文B。");
 });
 
-test("独立最终写作仅产生思考时暂停，恢复也会清空旧思考和事件后重新取证", async (t) => {
+test("独立最终写作暂停后恢复会重新取证且不暴露供应商推理", async (t) => {
   const harness = await createStore();
   t.after(() => harness.close());
   let preparations = 0;
-  const oldReasoning = "旧推理A".repeat(100);
   const provider: ResearchGenerationProvider = {
     provider: "agent-fake", model: "agent-model",
     async *generate() { yield "ordinary fallback"; },
@@ -526,7 +525,6 @@ test("独立最终写作仅产生思考时暂停，恢复也会清空旧思考�
     },
     async *writeGroundedFinalStream(_request, _evidence, options) {
       if (preparations === 1) {
-        options.onReasoning?.(oldReasoning);
         await new Promise((resolve) => setTimeout(resolve, 35));
         yield "旧流不得写入。";
         return;
@@ -539,8 +537,8 @@ test("独立最终写作仅产生思考时暂停，恢复也会清空旧思考�
   const session = await service.createSession("测试", "grounded-reasoning-pause-session");
   const turn = await service.submitMessage(session.id, "解释", "grounded-reasoning-pause-turn", { allowWebSearch: true });
   const firstRun = service.processTask(turn.task.id);
-  for (let i = 0; i < 200 && harness.store.getResearchMessage(turn.task.outputMessageId)?.reasoning !== oldReasoning; i++) await new Promise((r) => setImmediate(r));
-  assert.equal(harness.store.getResearchMessage(turn.task.outputMessageId)?.reasoning, oldReasoning);
+  for (let i = 0; i < 200 && service.getTask(turn.task.id).status !== "running"; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(harness.store.getResearchMessage(turn.task.outputMessageId)?.reasoning, undefined);
   assert.ok(service.getTaskEvents(turn.task.id).length > 0, "暂停前已有旧尝试事件");
   await service.pauseTask(turn.task.id);
   await firstRun;
@@ -876,7 +874,7 @@ test("关闭联网开关时跳过 Agent 搜索并把任务标记为未请求联�
   const session = await service.createSession("测试", "session-off-key");
   const turn = await service.submitMessage(session.id, "只看当前材料", "turn-off-key");
 
-  assert.equal(turn.task.allowWebSearch, false);
+  assert.equal(turn.task.webSearchMode, "off");
   assert.deepEqual(turn.task.groundingScope, { status: "not_requested", sourceCount: 0, citationCount: 0 });
   await service.processTask(turn.task.id);
 
@@ -888,7 +886,7 @@ test("关闭联网开关时跳过 Agent 搜索并把任务标记为未请求联�
   assert.equal(harness.store.listResearchGroundingRuns(turn.task.id).length, 0);
 });
 
-test("用户开启联网但供应商没有联网实现时诚实标记为不支持", async (t) => {
+test("required 模式没有搜索实现时在回答模型调用前明确失败", async (t) => {
   const harness = await createStore();
   t.after(() => harness.close());
   const provider: ResearchGenerationProvider = {
@@ -901,7 +899,177 @@ test("用户开启联网但供应商没有联网实现时诚实标记为不支�
   await service.processTask(turn.task.id);
 
   const task = service.getTask(turn.task.id);
+  assert.equal(task.status, "failed");
+  assert.equal(task.error?.code, "web_search_unavailable");
+  assert.equal(harness.store.getResearchMessage(turn.task.outputMessageId)?.content, "");
+  assert.equal(harness.store.listResearchGroundingRuns(turn.task.id).length, 0);
+});
+
+test("required 搜索已调用但零结果时置顶固定提示并保存真实审计", async (t) => {
+  const harness = await createStore();
+  t.after(() => harness.close());
+  const provider: ResearchGenerationProvider = {
+    provider: "zero-result-fake", model: "zero-result-model",
+    async *generate() { yield "未核验回答。"; },
+    async prepareGrounded() {
+      return {
+        kind: "evidence" as const,
+        evidence: "",
+        status: "no_verifiable_sources" as const,
+        queries: ["当前问题"],
+        sources: [],
+        citations: [],
+        responseSummary: {
+          requestedBackend: "tavily",
+          attemptedBackends: ["tavily"],
+          actualBackend: "tavily",
+          usedFallback: false,
+          queryCount: 1,
+          resultCount: 0,
+          sourceCount: 0,
+        },
+      };
+    },
+    async writeBody() { return "未核验回答。"; },
+  };
+  const service = new ResearchSessionService(harness.store, { provider, autoRunTasks: false });
+  const session = await service.createSession("测试", "required-zero-session");
+  const turn = await service.submitMessage(session.id, "查询当前问题", "required-zero-turn", { webSearchMode: "required" });
+  await service.processTask(turn.task.id);
+
+  const task = service.getTask(turn.task.id);
+  const body = harness.store.getResearchMessage(turn.task.outputMessageId)?.content ?? "";
   assert.equal(task.status, "completed");
-  assert.equal(task.groundingScope?.status, "grounding_unsupported");
-  assert.equal(harness.store.listResearchGroundingRuns(turn.task.id).length, 1);
+  assert.match(body, /^联网搜索已执行，但未获得可用来源；以下内容未完成外部核验。/);
+  assert.match(body, /原因：搜索完成，但没有返回结果。/);
+  assert.equal(task.webSearchAudit?.failureClassification, "zero_results");
+  assert.deepEqual(task.webSearchAudit?.attemptedBackends, ["tavily"]);
+  assert.equal(task.webSearchAudit?.queryCount, 1);
+  assert.ok(task.executionEvents?.some((event) => event.stage === "degradation" && event.status === "completed"));
+});
+
+test("搜索故障切换保留请求后端、实际后端与结果数", async (t) => {
+  const harness = await createStore();
+  t.after(() => harness.close());
+  const provider: ResearchGenerationProvider = {
+    provider: "fallback-fake", model: "fallback-model",
+    async *generate() { yield "fallback"; },
+    async prepareGrounded() {
+      return {
+        kind: "evidence" as const,
+        evidence: "来源内容。",
+        status: "evidence_prepared" as const,
+        queries: ["查询"],
+        sources: [{ title: "Source", snippet: "来源内容。", evidenceStatus: "full" as const }],
+        citations: [],
+        responseSummary: {
+          requestedBackend: "tavily",
+          attemptedBackends: ["tavily", "bing"],
+          actualBackend: "bing",
+          usedFallback: true,
+          queryCount: 1,
+          resultCount: 2,
+          sourceCount: 1,
+        },
+      };
+    },
+    async *writeGroundedFinalStream(_request, _evidence, options) {
+      yield "基于来源的回答。";
+      options.onStreamDone?.({ finishReason: "stop" });
+    },
+  };
+  const service = new ResearchSessionService(harness.store, { provider, autoRunTasks: false });
+  const session = await service.createSession("测试", "fallback-audit-session");
+  const turn = await service.submitMessage(session.id, "查询", "fallback-audit-turn", { webSearchMode: "required" });
+  await service.processTask(turn.task.id);
+  const audit = service.getTask(turn.task.id).webSearchAudit;
+  assert.deepEqual(audit, {
+    requestedBackend: "tavily",
+    attemptedBackends: ["tavily", "bing"],
+    usedFallback: true,
+    queryCount: 1,
+    resultCount: 2,
+    sourceCount: 1,
+  });
+});
+
+test("排队任务复用提交时执行意图，用户主动重试才读取当前设置", async (t) => {
+  const harness = await createStore();
+  t.after(() => harness.close());
+  let failFirst = false;
+  const seenModes: string[] = [];
+  const provider: ResearchGenerationProvider = {
+    provider: "intent-fake", model: "intent-model",
+    async resolveTaskRoute(_deep, requestedThinking) {
+      return { provider: "intent-fake", model: "intent-model", thinkingEnabled: requestedThinking };
+    },
+    async *generate(request) {
+      seenModes.push(request.executionIntent?.webSearch.mode ?? "missing");
+      if (failFirst) throw new Error("first failure");
+      yield "回答";
+    },
+  };
+  const service = new ResearchSessionService(harness.store, { provider, autoRunTasks: false });
+  const session = await service.createSession("测试", "intent-snapshot-session");
+  const queued = await service.submitMessage(session.id, "回答", "intent-snapshot-turn", { webSearchMode: "off" });
+  await harness.store.updateResearchNodeComposerPreferences(session.id, { webSearchMode: "required", thinkingEnabled: false });
+  await service.processTask(queued.task.id);
+  assert.deepEqual(seenModes, ["off"]);
+  assert.equal(service.getTask(queued.task.id).executionIntent?.webSearch.mode, "off");
+
+  failFirst = true;
+  await harness.store.updateResearchNodeComposerPreferences(session.id, { webSearchMode: "off", thinkingEnabled: false });
+  const failedTurn = await service.submitMessage(session.id, "失败回答", "intent-retry-turn", { webSearchMode: "off" });
+  await service.processTask(failedTurn.task.id);
+  const failedAttempt = service.getTask(failedTurn.task.id);
+  assert.equal(failedAttempt.status, "failed");
+  await harness.store.updateResearchNodeComposerPreferences(session.id, { webSearchMode: "required", thinkingEnabled: false });
+  const retried = await service.retryTask(failedTurn.task.id);
+  assert.equal(retried.executionIntent?.webSearch.mode, "required");
+  assert.equal(retried.generationAttempt, (failedAttempt.generationAttempt ?? 0) + 1);
+});
+
+test("已开启 thinking 但当前用途模型不支持时提交前拒绝", async (t) => {
+  const harness = await createStore();
+  t.after(() => harness.close());
+  const provider: ResearchGenerationProvider = {
+    provider: "no-thinking-fake", model: "no-thinking-model",
+    async resolveTaskRoute() { return { provider: "no-thinking-fake", model: "no-thinking-model", thinkingEnabled: false }; },
+    async *generate() { yield "不得调用"; },
+  };
+  const service = new ResearchSessionService(harness.store, { provider, autoRunTasks: false });
+  const session = await service.createSession("测试", "thinking-unavailable-session");
+  await assert.rejects(
+    service.submitMessage(session.id, "问题", "thinking-unavailable-turn", { thinkingEnabled: true }),
+    (error: unknown) => Boolean(error && typeof error === "object" && (error as { code?: string }).code === "thinking_unavailable"),
+  );
+  assert.equal(harness.store.listResearchTasks(session.id).length, 0);
+});
+
+test("排队后模型路由或 thinking 能力失效时明确失败而不静默切换", async (t) => {
+  for (const code of ["model_route_unavailable", "thinking_unavailable"] as const) {
+    const harness = await createStore();
+    t.after(() => harness.close());
+    const provider: ResearchGenerationProvider = {
+      provider: `lost-${code}`, model: "frozen-model",
+      async resolveTaskRoute(_deep, requestedThinking) {
+        return { provider: `lost-${code}`, model: "frozen-model", thinkingEnabled: requestedThinking };
+      },
+      // eslint-disable-next-line require-yield
+      async *generate() {
+        throw Object.assign(new Error(code), { code });
+      },
+    };
+    const service = new ResearchSessionService(harness.store, { provider, autoRunTasks: false });
+    const session = await service.createSession("测试", `lost-control-${code}`);
+    const turn = await service.submitMessage(session.id, "回答", `lost-control-turn-${code}`, {
+      webSearchMode: "off",
+      thinkingEnabled: code === "thinking_unavailable",
+    });
+    await service.processTask(turn.task.id);
+    const task = service.getTask(turn.task.id);
+    assert.equal(task.status, "failed");
+    assert.equal(task.error?.code, code);
+    assert.equal(harness.store.getResearchMessage(task.outputMessageId)?.content, "");
+  }
 });

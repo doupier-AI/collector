@@ -13,6 +13,7 @@ import {
   type MarkdownVisibleHighlight,
   type MarkdownVisibleTerm,
 } from "./markdown-projection";
+import { MarkdownCell, MarkdownPre, MarkdownTable } from "./RichMarkdownBlocks";
 
 export interface MarkdownContentProps {
   text: string;
@@ -99,6 +100,9 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
     img: ({ alt }: React.ImgHTMLAttributes<HTMLImageElement>): ReactNode => (
       alt ? <span className="markdown-image-fallback">{`[图片：${alt}]`}</span> : null
     ),
+    pre: MarkdownPre,
+    table: MarkdownTable,
+    td: MarkdownCell,
     // 卡片标题提升：正文首个标题（## / ###…）成为卡片大标题并挂导航锚点。
     ...(titleAnchorId ? buildPromotedHeadingComponents(titleAnchorId, promotedTitleRef) : {}),
   } as Record<string, React.ComponentType<any>>;

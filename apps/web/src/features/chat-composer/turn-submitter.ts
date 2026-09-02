@@ -40,7 +40,9 @@ export class TurnSubmitter {
     const key = options?.idempotencyKey ?? this.key ?? this.generateKey();
     this.key = key;
     if (isNewRequest) this.composerPreferences = {
-      allowWebSearch: options?.allowWebSearch ?? DEFAULT_COMPOSER_PREFERENCES.allowWebSearch,
+      webSearchMode: options?.webSearchMode ?? (options?.allowWebSearch === undefined
+        ? DEFAULT_COMPOSER_PREFERENCES.webSearchMode
+        : options.allowWebSearch ? "required" : "off"),
       thinkingEnabled: options?.thinkingEnabled ?? DEFAULT_COMPOSER_PREFERENCES.thinkingEnabled,
     };
     const request = this.submit(content, key, this.composerPreferences ?? { ...DEFAULT_COMPOSER_PREFERENCES });

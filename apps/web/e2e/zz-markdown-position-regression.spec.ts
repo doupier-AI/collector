@@ -7,7 +7,7 @@ test("共享 Markdown 夹具贯穿渲染、选择、引用、搜索与来源返�
   await page.setViewportSize({ width: 320, height: 720 });
   await pairAndOpen(page, "/research/new");
   await page.getByLabel("你的问题").fill(MARKDOWN_POSITION_FIXTURE.trigger);
-  await page.getByRole("button", { name: "开启联网搜索" }).click();
+  await page.getByRole("button", { name: "开启必须联网" }).click();
   await page.getByRole("button", { name: "开始研究" }).click();
   await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
   const nodeId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";

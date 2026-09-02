@@ -50,7 +50,7 @@ describe("ChatComposer", () => {
     await user.type(textarea, "什么是本地优先");
     await user.click(screen.getByRole("button", { name: "发送" }));
 
-    expect(onSubmit).toHaveBeenCalledWith("什么是本地优先", { allowWebSearch: false, thinkingEnabled: false });
+    expect(onSubmit).toHaveBeenCalledWith("什么是本地优先", { webSearchMode: "off", thinkingEnabled: false });
     expect(textarea).toHaveValue("什么是本地优先");
 
     release(true);
@@ -171,14 +171,14 @@ describe("ChatComposer", () => {
     const onSubmit = vi.fn(async () => true);
     renderComposer(onSubmit, "web-search-toggle");
 
-    const toggle = screen.getByRole("button", { name: "开启联网搜索" });
+    const toggle = screen.getByRole("button", { name: "开启必须联网" });
     expect(toggle).toHaveAttribute("aria-pressed", "false");
     await user.click(toggle);
-    expect(screen.getByRole("button", { name: "关闭联网搜索" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "关闭必须联网" })).toHaveAttribute("aria-pressed", "true");
     await user.type(screen.getByLabelText("你的问题"), "查一下最新资料");
     await user.click(screen.getByRole("button", { name: "发送" }));
 
-    expect(onSubmit).toHaveBeenCalledWith("查一下最新资料", { allowWebSearch: true, thinkingEnabled: false });
+    expect(onSubmit).toHaveBeenCalledWith("查一下最新资料", { webSearchMode: "required", thinkingEnabled: false });
   });
 
   it("模型不支持时保留深度思考偏好，切回支持模型后自动恢复可用", async () => {
@@ -280,7 +280,7 @@ describe("ChatComposer 双模发送（阶段 H4a）", () => {
     await user.click(growButton);
 
     expect(onStartChildNode).toHaveBeenCalledTimes(1);
-    expect(onStartChildNode).toHaveBeenCalledWith("", { allowWebSearch: false, thinkingEnabled: false });
+    expect(onStartChildNode).toHaveBeenCalledWith("", { webSearchMode: "off", thinkingEnabled: false });
   });
 
   it("深入研究这段：输入框有内容时作为 query 传入", async () => {
@@ -300,7 +300,7 @@ describe("ChatComposer 双模发送（阶段 H4a）", () => {
     await user.type(screen.getByLabelText("你的问题"), "把背后的机制讲透");
     await user.click(screen.getByRole("button", { name: "深入研究这段" }));
 
-    expect(onStartChildNode).toHaveBeenCalledWith("把背后的机制讲透", { allowWebSearch: false, thinkingEnabled: false });
+    expect(onStartChildNode).toHaveBeenCalledWith("把背后的机制讲透", { webSearchMode: "off", thinkingEnabled: false });
   });
 
   it("胶囊移除按钮触发 onRemoveCitation", async () => {

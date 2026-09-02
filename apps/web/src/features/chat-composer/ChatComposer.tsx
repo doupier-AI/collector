@@ -83,6 +83,7 @@ export function ChatComposer({
   const [growingNode, setGrowingNode] = useState(false);
   const [growError, setGrowError] = useState<string | null>(null);
   const [localPreferences, setLocalPreferences] = useState<ComposerPreferences>(() => ({ ...DEFAULT_COMPOSER_PREFERENCES }));
+  const webSearchRequired = (preferences ?? localPreferences).webSearchMode === "required";
   const routeCapability = useAiRouteConfiguration(thinkingPurpose);
   const submittingRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -118,7 +119,7 @@ export function ChatComposer({
             : "当前模型能力未知，无法启用深度思考。");
   const errorText = externalError ?? preferenceError ?? submitError ?? growError;
 
-  function setPreference(key: keyof ComposerPreferences, value: boolean) {
+  function setPreference<K extends keyof ComposerPreferences>(key: K, value: ComposerPreferences[K]) {
     const next = { ...composerPreferences, [key]: value };
     if (onPreferencesChange) {
       void onPreferencesChange(next);
@@ -295,12 +296,12 @@ export function ChatComposer({
             </button>
             <button
               type="button"
-              className={`composer__tool${composerPreferences.allowWebSearch ? " composer__tool--active" : ""}`}
-              aria-pressed={composerPreferences.allowWebSearch}
-              aria-label={composerPreferences.allowWebSearch ? "关闭联网搜索" : "开启联网搜索"}
-              data-tooltip={composerPreferences.allowWebSearch ? "关闭联网搜索" : "开启联网搜索"}
-              title={composerPreferences.allowWebSearch ? "关闭联网搜索" : "开启联网搜索"}
-              onClick={() => setPreference("allowWebSearch", !composerPreferences.allowWebSearch)}
+              className={`composer__tool${webSearchRequired ? " composer__tool--active" : ""}`}
+              aria-pressed={webSearchRequired}
+              aria-label={webSearchRequired ? "关闭必须联网" : "开启必须联网"}
+              data-tooltip={webSearchRequired ? "关闭必须联网" : "开启必须联网"}
+              title={webSearchRequired ? "关闭必须联网" : "开启必须联网"}
+              onClick={() => setPreference("webSearchMode", webSearchRequired ? "off" : "required")}
             >
               <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
                 <circle cx="10" cy="10" r="6.75" fill="none" stroke="currentColor" strokeWidth="1.45" />

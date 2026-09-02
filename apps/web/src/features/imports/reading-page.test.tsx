@@ -60,7 +60,7 @@ describe("阅读视图", () => {
 
     // Markdown 标题块渲染为标题，其余按块类型渲染
     expect(screen.getByRole("heading", { name: "第一章", level: 1 })).toBeInTheDocument();
-    expect(screen.getByText("const a = 1;").closest("pre")).not.toBeNull();
+    expect(document.querySelector("pre code")?.textContent).toBe("const a = 1;");
     expect(screen.getByText("第 3–5 行")).toBeInTheDocument();
     expect(screen.getByText("第 12 行")).toBeInTheDocument();
     expect(screen.getByText("段落 3")).toBeInTheDocument();
@@ -298,7 +298,7 @@ describe("阅读视图 ChatComposer", () => {
 
     expect(submitResearchMessage).toHaveBeenCalledTimes(1);
     expect(submitResearchMessage).toHaveBeenCalledWith("session-1", "总结这篇文章", expect.any(String), {
-      allowWebSearch: false,
+      webSearchMode: "off",
       thinkingEnabled: false,
     });
   });

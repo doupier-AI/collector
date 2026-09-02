@@ -31,6 +31,7 @@ import {
   RESEARCH_GROUNDING_MAX_SOURCES,
   RESEARCH_GROUNDING_TEXT_MAX_CHARACTERS,
   type ResearchGroundingScopeStatus,
+  type ResearchExecutionIntent,
   type ResearchFusionSource,
   type ResearchSourceHealth,
   type ResearchMapSettings,
@@ -59,6 +60,10 @@ import { assembleConnectionTestContext, assemblePurposeContext } from "./model-c
 
 const RESEARCH_MAP_DEFAULT_FOCUS_SETTING_KEY = "research_map_default_focus_from_node";
 
+function executionControlError(code: "model_route_unavailable" | "thinking_unavailable", message: string): Error & { code: typeof code } {
+  return Object.assign(new Error(message), { name: "ExecutionControlError", code });
+}
+
 import { deriveMessageBodyArtifacts } from "./body-artifacts.js";
 import {
   DEFAULT_PROVIDER_REGISTRY,
@@ -71,6 +76,7 @@ import {
   probeModelCapabilities,
   resolveCatalogCapabilities,
   validateExternalProviderBaseUrl,
+  fingerprintBaseUrl,
 } from "@collector/model-gateway";
 
 import {
@@ -105,7 +111,7 @@ import { NodeNamingService } from "./node-naming.js";
 import { SessionTitlingService } from "./session-titling.js";
 import { ResearchProjectService } from "./projects.js";
 import {
-  webSearch,
+  webSearchWithConfig,
   webFetch,
   createSearchRunContext,
 } from "./web-search-agent.js";
@@ -405,6 +411,7 @@ export class CaptureService {
     });
     return {
       ...view,
+      tasks: view.tasks.map((task) => this.research.withExecutionEvents(task)),
       termDetections,
       slices,
       bodyVersions,
@@ -605,22 +612,42 @@ export class CaptureService {
       groundingCapability,
       async resolveTaskRoute(deepResearch, requestedThinking) {
         const purpose = deepResearch ? "research" : "chat";
-        const purposeGateway = await service.gatewayForPurpose(purpose);
+        const modelIntent = service.modelExecutionIntent(purpose);
+        const purposeGateway = await service.gatewayForExecutionIntent(modelIntent, purpose);
         const routeCapability = service.aiRouteConfiguration(purpose);
         return {
           provider: purposeGateway?.providerName,
           model: purposeGateway?.modelName,
           thinkingEnabled: requestedThinking && routeCapability.thinkingSupported && purposeGateway?.thinkingSupported === true,
+          ...(modelIntent ? { modelIntent } : {}),
         };
       },
       async prepareGrounded(request) {
         if (!request.answerPlan) throw new Error("Evidence preparation requires an admitted Answer Plan");
         // Safety retry/circuit state remains scoped to this single preparation run.
         const searchCtx = createSearchRunContext();
+        const currentSearchConfig = getSearchConfigFromAgent();
+        const searchSnapshot = {
+          ...currentSearchConfig,
+          backend: (request.executionIntent?.webSearch.requestedBackend ?? currentSearchConfig.backend) as SearchBackendId,
+          fallback: request.executionIntent
+            ? request.executionIntent.webSearch.fallbackPolicy === "enabled"
+            : currentSearchConfig.fallback,
+        };
+        const attemptedBackends = new Set<string>();
+        let searchResultCount = 0;
+        let searchErrorReason: string | undefined;
+        let searchFailureClassification: "timeout" | "backend_error" | undefined;
+        let usedFallback = false;
         const preparation = new EvidencePreparationModule({
           search: async (query, maxResults) => {
             const startedAt = Date.now();
-            const result = await webSearch(query, maxResults);
+            const result = await webSearchWithConfig(query, maxResults, searchSnapshot);
+            result.attemptedBackends?.forEach((backend) => attemptedBackends.add(backend));
+            searchResultCount += result.results.length;
+            usedFallback ||= result.usedFallback === true;
+            if (result.errorMessage) searchErrorReason = "搜索后端返回错误";
+            if (result.failureClassification) searchFailureClassification = result.failureClassification;
             searchCtx.recordEntry({
               stage: "search",
               domain: "search",
@@ -639,7 +666,7 @@ export class CaptureService {
         const result = await preparation.prepare({
           currentQuestion: request.messages[0]?.content ?? request.answerPlan.userGoal,
           answerPlan: request.answerPlan,
-          webAuthorization: request.allowWebSearch === true ? "authorized" : "not_authorized",
+          webAuthorization: request.webSearchMode === "required" ? "authorized" : "not_authorized",
           budget: { maxQueries: 2, maxCandidates: 10, maxFetches: 8, maxPackedTokens: 6_000 },
         });
         const scopeStatus: ResearchGroundingScopeStatus = result.bundle.evidencePolicyStatus === "policy_satisfied"
@@ -668,20 +695,25 @@ export class CaptureService {
             citationCount: 0,
             queryCount: result.bundle.queries.length,
             method: "evidence-preparation-v1",
-            searchBackend: getSearchConfigFromAgent().backend,
+            requestedBackend: request.executionIntent?.webSearch.requestedBackend ?? searchSnapshot.backend,
+            attemptedBackends: [...attemptedBackends],
+            actualBackend: [...attemptedBackends].at(-1),
+            usedFallback,
+            resultCount: searchResultCount,
+            searchFailureReason: searchErrorReason,
+            searchFailureClassification,
           },
           ...([...searchCtx.toTrace(), ...result.trace].length ? { trace: [...searchCtx.toTrace(), ...result.trace] } : {}),
         };
       },
       async *writeGroundedFinalStream(request, _evidence, streamOptions) {
-        const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
-        if (!purposeGateway) throw new Error("AI model is not configured");
+        const purpose = request.deepResearch ? "research" : "chat";
+        const purposeGateway = await service.generationGatewayForExecutionIntent(request.executionIntent, purpose);
         yield* purposeGateway.writeResearchBodyStreamFromContext(request.contextAssembly, {
           thinking: request.thinkingEnabled === true,
           ...(streamOptions.resumeFrom ? { resumeFrom: streamOptions.resumeFrom } : {}),
           ...(streamOptions.signal ? { signal: streamOptions.signal } : {}),
           ...(streamOptions.onStreamDone ? { onDone: streamOptions.onStreamDone } : {}),
-          ...(streamOptions.onReasoning ? { onReasoning: streamOptions.onReasoning } : {}),
           ...(streamOptions.onCitation ? { onCitation: streamOptions.onCitation } : {}),
           citationSources: streamOptions.sources,
           nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0,
@@ -706,8 +738,8 @@ export class CaptureService {
         };
       },
       async *generate(request) {
-        const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
-        if (!purposeGateway) throw new Error("AI model is not configured");
+        const purpose = request.deepResearch ? "research" : "chat";
+        const purposeGateway = await service.generationGatewayForExecutionIntent(request.executionIntent, purpose);
         if (!request.contextAssembly) {
           const assembly = assemblePurposeContext({
             purpose: "term_preview",
@@ -743,8 +775,8 @@ export class CaptureService {
         for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
       },
       async planAnswer(assembly, context) {
-        const purposeGateway = await service.gatewayForPurpose(context.deepResearch ? "research" : "chat");
-        if (!purposeGateway) throw new Error("AI model is not configured");
+        const purpose = context.deepResearch ? "research" : "chat";
+        const purposeGateway = await service.generationGatewayForExecutionIntent(context.executionIntent, purpose);
         return purposeGateway.planAnswerFromContext(assembly, {
           thinking: context.thinkingEnabled,
           context: {
@@ -756,39 +788,38 @@ export class CaptureService {
         });
       },
       async writeBody(request) {
-        const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
-        if (!purposeGateway) throw new Error("AI model is not configured");
+        const purpose = request.deepResearch ? "research" : "chat";
+        const purposeGateway = await service.generationGatewayForExecutionIntent(request.executionIntent, purpose);
         return purposeGateway.writeResearchBodyFromContext(request.contextAssembly, {
           thinking: request.thinkingEnabled === true,
           nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0,
           context: { workflowRunId: request.taskId, answerPlanId: request.answerPlan?.planId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION, ...(request.previousBudgetResolutionAttemptId ? { previousBudgetResolutionAttemptId: request.previousBudgetResolutionAttemptId } : {}) },
         });
       },
-      // 真实逐字流式（方案 B）：委托网关 writeResearchBodyStream，逐字产出文本增量；思考增量经 onReasoning 旁路转发（ADR-0035）；signal 供暂停/停止中止物理流。
+      // 真实逐字流式：只转发用户可见正文；供应商 reasoning 通道不进入产品数据流。
       async *writeBodyStream(request) {
-        const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
-        if (!purposeGateway) throw new Error("AI model is not configured");
+        const purpose = request.deepResearch ? "research" : "chat";
+        const purposeGateway = await service.generationGatewayForExecutionIntent(request.executionIntent, purpose);
         yield* purposeGateway.writeResearchBodyStreamFromContext(request.contextAssembly, {
           thinking: request.thinkingEnabled === true,
           nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0,
           ...(request.resumeFrom !== undefined ? { resumeFrom: request.resumeFrom } : {}),
           ...(request.onStreamDone ? { onDone: request.onStreamDone } : {}),
-          ...(request.onReasoning ? { onReasoning: request.onReasoning } : {}),
           ...(request.signal ? { signal: request.signal } : {}),
           context: { workflowRunId: request.taskId, answerPlanId: request.answerPlan?.planId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION, ...(request.previousBudgetResolutionAttemptId ? { previousBudgetResolutionAttemptId: request.previousBudgetResolutionAttemptId } : {}) },
         });
       },
       async generateOutline(request) {
-        const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
-        if (!purposeGateway) throw new Error("AI model is not configured");
+        const purpose = request.deepResearch ? "research" : "chat";
+        const purposeGateway = await service.generationGatewayForExecutionIntent(request.executionIntent, purpose);
         return purposeGateway.generateBodyOutlineFromContext(request.contextAssembly, {
           thinking: request.thinkingEnabled === true,
           context: { workflowRunId: request.taskId, answerPlanId: request.answerPlan?.planId, purpose: "research_body_outline", promptVersion: RESEARCH_SLICE_PROMPT_VERSION, ...(request.previousBudgetResolutionAttemptId ? { previousBudgetResolutionAttemptId: request.previousBudgetResolutionAttemptId } : {}) },
         });
       },
       async expandSection(request) {
-        const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
-        if (!purposeGateway) throw new Error("AI model is not configured");
+        const purpose = request.deepResearch ? "research" : "chat";
+        const purposeGateway = await service.generationGatewayForExecutionIntent(request.executionIntent, purpose);
         return purposeGateway.expandBodySectionFromContext(
           request.contextAssembly,
           {
@@ -946,15 +977,19 @@ export class CaptureService {
     const assignedProfileId = this.store.listModelPurposeRoutes().find((route) => route.purpose === purpose)?.profileId;
     const assigned = assignedProfileId ? this.store.getProviderProfile(assignedProfileId) : undefined;
     const active = this.store.getActiveProviderProfile();
-    const profile = assigned?.enabled && assigned.credentialConfigured ? assigned
-      : active?.enabled && active.credentialConfigured ? active
-        : undefined;
+    // An explicit purpose route is authoritative. If it breaks, surface the break instead of
+    // silently changing the user's chosen model to the active profile.
+    const profile = assignedProfileId
+      ? assigned?.enabled && assigned.credentialConfigured ? assigned : undefined
+      : active?.enabled && active.credentialConfigured ? active : undefined;
     if (!profile) {
       const capabilities = createCapabilityMatrix({ apiMode: "openai_chat_completions" }, "unknown", "route_unavailable");
       return {
         thinkingSupported: false,
         capabilities,
-        unavailableReason: this.modelGatewayError ?? "模型不可用，无法启用深度思考。",
+        unavailableReason: assignedProfileId
+          ? "指定用途的模型路由不可用，请修复或清除该用途分配。"
+          : this.modelGatewayError ?? "模型不可用，无法启用深度思考。",
       };
     }
     const status = this.getModelCapabilityStatus(profile.id);
@@ -1400,7 +1435,7 @@ export class CaptureService {
     return this.getModelRouting();
   }
 
-  /** 重建按任务类型的网关快照；失效的分配（配置被删、Key 缺失、解析失败）静默回退激活配置。 */
+  /** Rebuild explicit purpose gateways. Broken assignments stay broken and never fall back. */
   private async refreshPurposeGateways(): Promise<void> {
     const next = new Map<ModelPurpose, ModelGateway>();
     if (!this.options.mvpDemoMode) {
@@ -1415,9 +1450,7 @@ export class CaptureService {
           const runtime = await resolver.resolve(profile, this.getModelCapabilityStatus(profile.id).capabilities);
           this.attachModelGateway(runtime.gateway);
           next.set(route.purpose, runtime.gateway);
-        } catch {
-          // 分配引用的配置不可用时回退激活配置，不阻断其他用途
-        }
+        } catch { /* Other purpose routes remain independently available. */ }
       }
     }
     this.purposeGateways = next;
@@ -1426,11 +1459,76 @@ export class CaptureService {
 
   /**
    * 按任务类型解析当前应使用的网关（内部方法，测试可直接断言）。
-   * 无分配或分配失效时回退当前激活配置的网关。
+   * An unassigned purpose follows the active profile; an assigned purpose never falls back.
    */
   async gatewayForPurpose(purpose: ModelPurpose): Promise<ModelGateway | undefined> {
     if (this.purposeGatewaysStale) await this.refreshPurposeGateways();
-    return this.purposeGateways.get(purpose) ?? this.modelGateway;
+    const assigned = this.store.listModelPurposeRoutes().some((route) => route.purpose === purpose);
+    return this.purposeGateways.get(purpose) ?? (assigned ? undefined : this.modelGateway);
+  }
+
+  private modelExecutionIntent(purpose: "chat" | "research"): ResearchExecutionIntent["model"] | undefined {
+    const assignedRoute = this.store.listModelPurposeRoutes().find((route) => route.purpose === purpose);
+    const profile = assignedRoute
+      ? this.store.getProviderProfile(assignedRoute.profileId)
+      : this.store.getActiveProviderProfile();
+    if (!profile?.enabled || !profile.credentialConfigured) return undefined;
+    let definition: ProviderDefinition;
+    try { definition = DEFAULT_PROVIDER_REGISTRY.get(profile.providerId); } catch { return undefined; }
+    return {
+      purpose,
+      configurationSource: assignedRoute ? "purpose_route" : "active_profile",
+      configurationVersion: profile.configurationVersion,
+      providerProfileId: profile.id,
+      provider: profile.providerId,
+      model: profile.model,
+      apiMode: definition.apiMode,
+      baseUrlFingerprint: fingerprintBaseUrl(profile.baseUrl),
+    };
+  }
+
+  /** Resolve only the frozen route. A changed/deleted route is an explicit task failure. */
+  private async gatewayForExecutionIntent(
+    intent: ResearchExecutionIntent["model"] | undefined,
+    legacyPurpose: "chat" | "research",
+  ): Promise<ModelGateway | undefined> {
+    if (!intent) return this.gatewayForPurpose(legacyPurpose);
+    if (intent.configurationSource === "injected_provider") return this.modelGateway;
+    if (!intent.providerProfileId || !intent.baseUrlFingerprint) return undefined;
+    const route: ActiveModelRoute = {
+      providerProfileId: intent.providerProfileId,
+      providerId: intent.provider,
+      apiMode: intent.apiMode,
+      baseUrlFingerprint: intent.baseUrlFingerprint,
+      model: intent.model,
+      configurationVersion: intent.configurationVersion,
+    };
+    if (this.modelGatewayResolver) return this.modelGatewayResolver(route);
+    const profile = this.store.getProviderProfile(intent.providerProfileId);
+    if (!profile || profile.providerId !== intent.provider || profile.model !== intent.model
+      || profile.configurationVersion !== intent.configurationVersion
+      || fingerprintBaseUrl(profile.baseUrl) !== intent.baseUrlFingerprint) return undefined;
+    try {
+      const resolver = new ProviderRuntimeResolver(
+        DEFAULT_PROVIDER_REGISTRY,
+        async (profileId) => this.store.getProviderCredential(profileId),
+      );
+      return (await resolver.resolve(profile, this.getModelCapabilityStatus(profile.id).capabilities)).gateway;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async generationGatewayForExecutionIntent(
+    intent: ResearchExecutionIntent | undefined,
+    purpose: "chat" | "research",
+  ): Promise<ModelGateway> {
+    const gateway = await this.gatewayForExecutionIntent(intent?.model, purpose);
+    if (!gateway) throw executionControlError("model_route_unavailable", "The frozen model route is unavailable");
+    if (intent?.thinking.applied && gateway.thinkingSupported !== true) {
+      throw executionControlError("thinking_unavailable", "The frozen model route no longer supports thinking");
+    }
+    return gateway;
   }
 
   async testProviderProfile(id: string): Promise<ProviderTestResult> {

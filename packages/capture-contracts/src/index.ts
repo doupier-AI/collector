@@ -393,7 +393,7 @@ export interface ConversationContext {
   relations: readonly ConversationContextRelation[];
 }
 
-export const ANSWER_PLAN_SCHEMA_VERSION = 1 as const;
+export const ANSWER_PLAN_SCHEMA_VERSION = 2 as const;
 export const ANSWER_PLANNER_VERSION = "answer-planner-v1" as const;
 
 export const ANSWER_TASK_FAMILIES = [
@@ -455,7 +455,7 @@ export interface AnswerUncertaintyHandling {
 
 export interface AnswerPlanMachineCheck {
   id: string;
-  kind: "non_empty" | "format" | "required_heading" | "forbidden_string" | "truncation" | "body_version" | "citation_range";
+  kind: "non_empty" | "format" | "min_length" | "max_length" | "required_heading" | "forbidden_string" | "truncation" | "body_version" | "citation_range";
   expected?: string;
   source: "product" | "explicit_constraint" | "plan";
 }
@@ -463,6 +463,23 @@ export interface AnswerPlanMachineCheck {
 export interface AnswerCompletionContract {
   machineChecks: readonly AnswerPlanMachineCheck[];
   semanticCriteria: readonly string[];
+}
+
+export const ANSWER_PRESENTATION_BLOCKS = [
+  "heading",
+  "bullet_list",
+  "numbered_list",
+  "table",
+  "code",
+  "blockquote",
+  "math",
+  "mermaid",
+] as const;
+export type AnswerPresentationBlock = (typeof ANSWER_PRESENTATION_BLOCKS)[number];
+
+export interface AnswerPresentationPlan {
+  mode: "compact" | "structured";
+  preferredBlocks: readonly AnswerPresentationBlock[];
 }
 
 /**
@@ -492,6 +509,8 @@ export interface AnswerPlan {
   assumptions: readonly AnswerPlanAssumption[];
   evidencePolicy: AnswerEvidencePolicy;
   uncertaintyHandling: AnswerUncertaintyHandling;
+  /** Derived expression guidance only. Explicit user formatting remains authoritative. */
+  presentation: AnswerPresentationPlan;
   completionContract: AnswerCompletionContract;
 }
 
@@ -2034,14 +2053,45 @@ export function messageUsesSectionCards(
 export type AiConfigurationMode = "real" | "demo" | "unconfigured";
 
 export interface ComposerPreferences {
-  allowWebSearch: boolean;
+  webSearchMode?: WebSearchMode;
+  /** @deprecated persisted/input compatibility only; normalized views emit webSearchMode. */
+  allowWebSearch?: boolean;
   thinkingEnabled: boolean;
 }
 
-export const DEFAULT_COMPOSER_PREFERENCES: Readonly<ComposerPreferences> = Object.freeze({
-  allowWebSearch: false,
+export const DEFAULT_COMPOSER_PREFERENCES: Readonly<ComposerPreferences> & { webSearchMode: WebSearchMode } = Object.freeze({
+  webSearchMode: "off",
   thinkingEnabled: false,
 });
+
+export type WebSearchMode = "off" | "required";
+
+/** Legacy booleans are accepted only at input boundaries. New and legacy fields may not conflict. */
+export function normalizeWebSearchModeInput(value: {
+  webSearchMode?: unknown;
+  allowWebSearch?: unknown;
+}, fallback: WebSearchMode = "off"): WebSearchMode {
+  if (value.webSearchMode !== undefined && value.webSearchMode !== "off" && value.webSearchMode !== "required") {
+    throw new Error('webSearchMode must be "off" or "required" when provided');
+  }
+  if (value.allowWebSearch !== undefined && typeof value.allowWebSearch !== "boolean") {
+    throw new Error("allowWebSearch must be a boolean when provided");
+  }
+  const legacy = value.allowWebSearch === undefined ? undefined : value.allowWebSearch ? "required" : "off";
+  if (value.webSearchMode !== undefined && legacy !== undefined && value.webSearchMode !== legacy) {
+    throw new Error("webSearchMode conflicts with legacy allowWebSearch");
+  }
+  return (value.webSearchMode as WebSearchMode | undefined) ?? legacy ?? fallback;
+}
+
+export function normalizeComposerPreferences(value: unknown, fallback: ComposerPreferences = DEFAULT_COMPOSER_PREFERENCES): ComposerPreferences {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ...fallback };
+  const input = value as { webSearchMode?: unknown; allowWebSearch?: unknown; thinkingEnabled?: unknown };
+  return {
+    webSearchMode: normalizeWebSearchModeInput(input, fallback.webSearchMode ?? "off"),
+    thinkingEnabled: typeof input.thinkingEnabled === "boolean" ? input.thinkingEnabled : fallback.thinkingEnabled,
+  };
+}
 
 export interface AiRouteConfigurationView {
   provider?: string;
@@ -2394,8 +2444,92 @@ export function evaluateSelectionQuality(input: { text: string; blockCount: numb
 }
 
 export interface ResearchTaskError {
-  code: "model_not_configured" | "provider_error" | "service_restarted";
+  code:
+    | "model_not_configured"
+    | "provider_error"
+    | "service_restarted"
+    | "model_route_unavailable"
+    | "thinking_unavailable"
+    | "web_search_unavailable"
+    | "deep_research_context_unavailable"
+    | "user_intent_unsatisfied";
   message: string;
+}
+
+export type ResearchTaskMode = "chat" | "deep_research";
+export type WebSearchFallbackPolicy = "enabled" | "disabled";
+export type WebSearchFailureClassification =
+  | "backend_unavailable"
+  | "backend_error"
+  | "timeout"
+  | "zero_results"
+  | "no_qualified_sources"
+  | "fetch_failed";
+
+export interface ResearchExecutionIntent {
+  schemaVersion: 1;
+  frozenAt: string;
+  taskMode: ResearchTaskMode;
+  deepResearch?: {
+    mode: DeepResearchMode;
+    selectionId: string;
+    sourceMessageId: string;
+    context: DeepResearchContext;
+    contextFingerprint: string;
+  };
+  model: {
+    purpose: "chat" | "research";
+    configurationSource: "purpose_route" | "active_profile" | "injected_provider";
+    configurationVersion: number;
+    providerProfileId?: string;
+    provider: string;
+    model: string;
+    apiMode: ProviderApiMode;
+    baseUrlFingerprint?: string;
+  };
+  webSearch: {
+    mode: WebSearchMode;
+    requestedBackend: string;
+    fallbackPolicy: WebSearchFallbackPolicy;
+    availableAtSubmission: boolean;
+    unavailableReasonCode?: string;
+  };
+  thinking: { requested: boolean; applied: boolean };
+}
+
+export interface ResearchWebSearchAudit {
+  requestedBackend: string;
+  attemptedBackends: string[];
+  usedFallback: boolean;
+  queryCount: number;
+  resultCount: number;
+  sourceCount: number;
+  failureClassification?: WebSearchFailureClassification;
+  /** Sanitized public reason. Never contains response bodies, URLs, prompts, or credentials. */
+  failureReason?: string;
+}
+
+export const RESEARCH_EXECUTION_STAGES = [
+  "planning",
+  "web_search",
+  "source_reading",
+  "model_analysis",
+  "drafting",
+  "finalizing",
+  "degradation",
+] as const;
+export type ResearchExecutionStage = (typeof RESEARCH_EXECUTION_STAGES)[number];
+export type ResearchExecutionStatus = "started" | "completed" | "failed";
+export interface ResearchExecutionEventRecord {
+  stage: ResearchExecutionStage;
+  status: ResearchExecutionStatus;
+  query?: string;
+  requestedBackend?: string;
+  actualBackend?: string;
+  usedFallback?: boolean;
+  resultCount?: number;
+  sourceCount?: number;
+  reasonCode?: string;
 }
 
 export type ResearchGroundingScopeStatus =
@@ -2471,8 +2605,16 @@ export interface ResearchTaskRecord {
   generationAttempt?: number;
   /** E2：只有完整正式切片落库后才写入；存于既有 research_tasks.record_json。 */
   sliceCount?: number;
-  /** 本次任务是否获得用户明确授权使用联网搜索；缺省值只兼容旧任务，服务端按 false 处理。 */
+  /** 入队时冻结的联网模式；旧任务缺省按 off 读取。 */
+  webSearchMode?: WebSearchMode;
+  /** @deprecated read-only compatibility for historical records. New tasks do not write it. */
   allowWebSearch?: boolean;
+  /** 提交时冻结的完整执行意图；恢复与自动重试必须复用。 */
+  executionIntent?: ResearchExecutionIntent;
+  /** 联网后端真实尝试的公开审计摘要。 */
+  webSearchAudit?: ResearchWebSearchAudit;
+  /** Runtime-produced public execution events for the current generation attempt. */
+  executionEvents?: ResearchExecutionEventRecord[];
   /** 本任务入队时按实际 chat/research 路由归一化后的有效值；旧任务缺省为 false。 */
   thinkingEnabled?: boolean;
   groundingScope?: ResearchGroundingScope;
@@ -2545,6 +2687,7 @@ export type ResearchTaskEvent =
   | { id?: number; type: "snapshot"; task: ResearchTaskRecord; message: ResearchMessageRecord; createdAt: string }
   | { id: number; type: "delta"; delta: string; message: ResearchMessageRecord; createdAt: string }
   | { id: number; type: "citation_candidate"; candidate: ResearchCitationCandidate; message: ResearchMessageRecord; createdAt: string }
+  | { id: number; type: "execution"; taskId: string; execution: ResearchExecutionEventRecord; message?: ResearchMessageRecord; createdAt: string }
   | { id: number; type: "completed"; task: ResearchTaskRecord; message: ResearchMessageRecord; createdAt: string }
   | { id: number; type: "failed"; task: ResearchTaskRecord; message: ResearchMessageRecord; createdAt: string }
   | { id: number; type: "stopped"; task: ResearchTaskRecord; message: ResearchMessageRecord; createdAt: string };
@@ -2595,20 +2738,21 @@ export function validateResearchImportHeaders(fileName: unknown, mimeType: unkno
   }
 }
 
-export function validateResearchMessageInput(value: unknown): asserts value is { content: string; allowWebSearch?: boolean; thinkingEnabled?: boolean } {
+export function validateResearchMessageInput(value: unknown): asserts value is { content: string; webSearchMode?: WebSearchMode; allowWebSearch?: boolean; thinkingEnabled?: boolean } {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Research message input must be an object");
-  const input = value as { content?: unknown; allowWebSearch?: unknown; thinkingEnabled?: unknown };
+  const input = value as { content?: unknown; webSearchMode?: unknown; allowWebSearch?: unknown; thinkingEnabled?: unknown };
   const content = input.content;
   if (typeof content !== "string" || !content.trim()) throw new Error("content is required");
   if (content.length > 200_000) throw new Error("content must not exceed 200000 characters");
-  if (input.allowWebSearch !== undefined && typeof input.allowWebSearch !== "boolean") throw new Error("allowWebSearch must be a boolean when provided");
+  normalizeWebSearchModeInput(input);
   if (input.thinkingEnabled !== undefined && typeof input.thinkingEnabled !== "boolean") throw new Error("thinkingEnabled must be a boolean when provided");
 }
 
 export function validateComposerPreferences(value: unknown): asserts value is ComposerPreferences {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Composer preferences must be an object");
-  const preferences = value as Partial<Record<keyof ComposerPreferences, unknown>>;
-  if (typeof preferences.allowWebSearch !== "boolean") throw new Error("allowWebSearch must be a boolean");
+  const preferences = value as { webSearchMode?: unknown; allowWebSearch?: unknown; thinkingEnabled?: unknown };
+  normalizeWebSearchModeInput(preferences);
+  if (preferences.webSearchMode === undefined && preferences.allowWebSearch === undefined) throw new Error("webSearchMode is required");
   if (typeof preferences.thinkingEnabled !== "boolean") throw new Error("thinkingEnabled must be a boolean");
 }
 
@@ -2638,7 +2782,9 @@ export interface DeepResearchInput {
   direction?: string;
   /** 独立研究会话标题；省略时按选区原文确定性派生，不依赖 AI。 */
   title?: string;
-  /** 本次第一轮是否允许联网搜索，默认关闭。 */
+  /** 本次第一轮联网模式，默认关闭。 */
+  webSearchMode?: WebSearchMode;
+  /** @deprecated input-only compatibility alias. */
   allowWebSearch?: boolean;
   /** 本次任务是否偏好深度思考；服务端仍按 research 实际路由归一化。 */
   thinkingEnabled?: boolean;
@@ -2648,7 +2794,9 @@ export interface DeepResearchInput {
 export interface CreateChildNodeInput {
   /** 用户补充的研究问题；省略时由系统根据选区原文生成默认追问。 */
   query?: string;
-  /** 本次首轮是否允许联网搜索，默认关闭。 */
+  /** 本次首轮联网模式，默认关闭。 */
+  webSearchMode?: WebSearchMode;
+  /** @deprecated input-only compatibility alias. */
   allowWebSearch?: boolean;
   /** 新节点继承父偏好后，本次首轮提交可携带当前思考偏好。 */
   thinkingEnabled?: boolean;
@@ -2658,7 +2806,7 @@ export const CHILD_NODE_QUERY_MAX_CHARACTERS = 2000;
 
 export function validateCreateChildNodeInput(value: unknown): asserts value is CreateChildNodeInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Child node input must be an object");
-  const input = value as { query?: unknown; allowWebSearch?: unknown; thinkingEnabled?: unknown };
+  const input = value as { query?: unknown; webSearchMode?: unknown; allowWebSearch?: unknown; thinkingEnabled?: unknown };
   if (input.query !== undefined) {
     if (typeof input.query !== "string" || !input.query.trim()) {
       throw new Error("query must be a non-empty string when provided");
@@ -2667,7 +2815,7 @@ export function validateCreateChildNodeInput(value: unknown): asserts value is C
       throw new Error(`query must not exceed ${CHILD_NODE_QUERY_MAX_CHARACTERS} characters`);
     }
   }
-  if (input.allowWebSearch !== undefined && typeof input.allowWebSearch !== "boolean") throw new Error("allowWebSearch must be a boolean when provided");
+  normalizeWebSearchModeInput(input);
   if (input.thinkingEnabled !== undefined && typeof input.thinkingEnabled !== "boolean") throw new Error("thinkingEnabled must be a boolean when provided");
 }
 
@@ -2707,7 +2855,7 @@ export const RESEARCH_DIRECTION_MAX_CHARACTERS = 2000;
 
 export function validateDeepResearchInput(value: unknown): asserts value is DeepResearchInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Deep research input must be an object");
-  const input = value as { mode?: unknown; direction?: unknown; title?: unknown; allowWebSearch?: unknown; thinkingEnabled?: unknown };
+  const input = value as { mode?: unknown; direction?: unknown; title?: unknown; webSearchMode?: unknown; allowWebSearch?: unknown; thinkingEnabled?: unknown };
   if (input.mode !== "branch" && input.mode !== "session") throw new Error("mode must be branch or session");
   if (input.direction !== undefined) {
     if (typeof input.direction !== "string" || !input.direction.trim()) {
@@ -2720,7 +2868,7 @@ export function validateDeepResearchInput(value: unknown): asserts value is Deep
   if (input.title !== undefined && (typeof input.title !== "string" || !input.title.trim() || input.title.trim().length > 200)) {
     throw new Error("title must contain 1 to 200 characters when provided");
   }
-  if (input.allowWebSearch !== undefined && typeof input.allowWebSearch !== "boolean") throw new Error("allowWebSearch must be a boolean when provided");
+  normalizeWebSearchModeInput(input);
   if (input.thinkingEnabled !== undefined && typeof input.thinkingEnabled !== "boolean") throw new Error("thinkingEnabled must be a boolean when provided");
 }
 

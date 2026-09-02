@@ -283,7 +283,7 @@ export class ResearchTermPreviewService {
       session,
       messages: [{ role: "user", content: prompt }],
       taskId: preview.id,
-      allowWebSearch: false,
+      webSearchMode: "off",
       // 预览内容是纯解释文本：不注入弱标记指令，模型不知道控制串语法就不会输出，
       // 从源头杜绝原始标记泄漏进弹层与生长子节点正文。
       ...(parentChain.ancestors.length ? { parentChainContext: parentChain } : {}),

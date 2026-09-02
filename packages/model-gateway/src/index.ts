@@ -819,7 +819,7 @@ export class ModelGateway {
 
   async *writeResearchBodyStreamFromContext(
     assembly: AssembledModelContext,
-    options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number; resumeFrom?: string; onDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; onCitation?: (candidate: ResearchCitationCandidate) => void; citationSources?: readonly ResearchCitationSourceIdentity[]; signal?: AbortSignal } = {},
+    options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number; resumeFrom?: string; onDone?: (done: { finishReason?: string }) => void; onCitation?: (candidate: ResearchCitationCandidate) => void; citationSources?: readonly ResearchCitationSourceIdentity[]; signal?: AbortSignal } = {},
   ): AsyncIterable<string> {
     const admittedResume = options.resumeFrom ? "[续写正文见已准入 continuation_state]" : undefined;
     yield* this.writeResearchBodyStream(
@@ -1128,12 +1128,11 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
    * 循环结束后 emitCall 恰好一次。经 trimStream 过滤保证 concat(yielded) === 完整正文.trim()，
    * 与 finalizeDerivedSlices 从 trimmed 文本派生块的偏移严格一致。
    * provider 未实现 completeStream 时退回非流式 complete()，把 trimmed 正文作为单个增量产出。
-   * ADR-0035：思考增量经 onReasoning 旁路转发（不计入正文、不参与 trim 与记账），
-   * 调用方按各自节流策略落思考展示区。
+   * 供应商 reasoning 事件在此边界丢弃：不返回、不持久化，也不进入正文或记账。
    */
   async *writeResearchBodyStream(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext; resumeFrom?: string; citationOffsetBase?: number; onDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; onCitation?: (candidate: ResearchCitationCandidate) => void; citationSources?: readonly ResearchCitationSourceIdentity[]; signal?: AbortSignal } = {},
+    options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext; resumeFrom?: string; citationOffsetBase?: number; onDone?: (done: { finishReason?: string }) => void; onCitation?: (candidate: ResearchCitationCandidate) => void; citationSources?: readonly ResearchCitationSourceIdentity[]; signal?: AbortSignal } = {},
   ): AsyncIterable<string> {
     if (!messages.length) throw new Error("Research body requires at least one message");
     const promptVersion = options.context?.promptVersion ?? this.promptVersion;
@@ -1195,12 +1194,12 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
       while (citationCandidates[0] && emitCitation(citationCandidates[0])) citationCandidates.shift();
     };
     try {
-      // reasoning 旁路：思考事件经 onReasoning 转发、不进入 trim/记账；delta/done 走原通道。
+      // 原始 reasoning 只在供应商协议解析层存在，到网关正文边界即丢弃。
       // completeStream 在窄化作用域内调用（async generator 惰性执行，调用本身不发起请求）。
       const streamEvents = provider.completeStream(prepared);
       const textEvents = (async function* () {
         for await (const event of streamEvents) {
-          if (event.type === "reasoning") { options.onReasoning?.(event.text); continue; }
+          if (event.type === "reasoning") continue;
           if (event.type === "citation") {
             const candidate = {
               sourceOrdinal: event.sourceOrdinal,

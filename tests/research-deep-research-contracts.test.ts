@@ -16,6 +16,8 @@ test("validateDeepResearchInput accepts branch and session modes", () => {
   assert.doesNotThrow(() => validateDeepResearchInput({ mode: "branch", allowWebSearch: true, thinkingEnabled: true }));
   assert.doesNotThrow(() => validateResearchMessageInput({ content: "继续", allowWebSearch: false, thinkingEnabled: true }));
   assert.doesNotThrow(() => validateCreateChildNodeInput({ query: "展开", allowWebSearch: true, thinkingEnabled: false }));
+  assert.doesNotThrow(() => validateResearchMessageInput({ content: "继续", webSearchMode: "required", thinkingEnabled: true }));
+  assert.doesNotThrow(() => validateDeepResearchInput({ mode: "branch", webSearchMode: "off" }));
 });
 
 test("validateDeepResearchInput rejects malformed input", () => {
@@ -31,6 +33,8 @@ test("validateDeepResearchInput rejects malformed input", () => {
   assert.throws(() => validateDeepResearchInput({ mode: "branch", thinkingEnabled: "yes" }), /thinkingEnabled/);
   assert.throws(() => validateResearchMessageInput({ content: "继续", thinkingEnabled: 1 }), /thinkingEnabled/);
   assert.throws(() => validateCreateChildNodeInput({ thinkingEnabled: null }), /thinkingEnabled/);
+  assert.throws(() => validateResearchMessageInput({ content: "继续", webSearchMode: "off", allowWebSearch: true }), /conflicts/);
+  assert.throws(() => validateDeepResearchInput({ mode: "branch", webSearchMode: "sometimes" }), /webSearchMode/);
 });
 
 test("deriveDefaultResearchTitle takes the first sentence deterministically", () => {

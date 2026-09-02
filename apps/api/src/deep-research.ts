@@ -1,6 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   DEFAULT_COMPOSER_PREFERENCES,
+  normalizeComposerPreferences,
   buildGraphProjection,
   buildResearchGraphObservation,
   isResearchPermanentEdge,
@@ -23,6 +24,7 @@ import {
   type ResearchSessionNodeTreeItem,
   type ResearchSessionRecord,
   type ResearchTaskRecord,
+  type ResearchExecutionIntent,
   type ResearchTermPreviewInput,
   type ResearchTermPreviewRecord,
   type ResearchTurnAccepted,
@@ -38,6 +40,27 @@ const SELECTION_EXCERPT_CHARACTERS = 120;
 
 /** 树导航节点标签的摘录长度（H2，H6 节点命名落地前的确定性标签）。 */
 const TREE_LABEL_CHARACTERS = 48;
+
+function frozenDeepResearchContext(
+  selection: ResearchSelectionRecord,
+  mode: "branch" | "session",
+  contentTitle?: string,
+): ResearchExecutionIntent["deepResearch"] {
+  const context = {
+    mode,
+    selectionText: selection.text,
+    ...(contentTitle ? { contentTitle } : {}),
+    ...(selection.contextBefore ? { contextBefore: selection.contextBefore } : {}),
+    ...(selection.contextAfter ? { contextAfter: selection.contextAfter } : {}),
+  };
+  return {
+    mode,
+    selectionId: selection.id,
+    sourceMessageId: selection.anchor.kind === "message" ? selection.anchor.messageId : selection.anchor.contentSnapshotId,
+    context,
+    contextFingerprint: createHash("sha256").update(JSON.stringify(context)).digest("hex"),
+  };
+}
 
 /** 节点生长首轮用户消息的包装前缀（选区生长模板，见 defaultFirstTurnContent）。 */
 export const NODE_GROWTH_FIRST_TURN_PREFIX = "深入研究这段内容：";
@@ -121,11 +144,16 @@ export class DeepResearchService {
     const now = new Date().toISOString();
     const firstTurnContent = input.direction?.trim() || defaultFirstTurnContent(selection);
     const sourceNode = this.store.getResearchNode(selection.nodeId ?? selection.sessionId);
-    const inherited = sourceNode?.composerPreferences ?? DEFAULT_COMPOSER_PREFERENCES;
+    const inherited = normalizeComposerPreferences(sourceNode?.composerPreferences);
     const preferences: ComposerPreferences = {
-      allowWebSearch: input.allowWebSearch ?? inherited.allowWebSearch,
+      webSearchMode: input.webSearchMode ?? (input.allowWebSearch === undefined ? inherited.webSearchMode : input.allowWebSearch ? "required" : "off") ?? "off",
       thinkingEnabled: input.thinkingEnabled ?? inherited.thinkingEnabled,
     };
+    const contentTitle = selection.anchor.kind === "snapshot"
+      ? this.store.getResearchContentSnapshot(selection.anchor.contentSnapshotId)?.title
+      : originSession.title;
+    const deepContext = frozenDeepResearchContext(selection, input.mode, contentTitle);
+    const executionIntent = await this.options.research.resolveExecutionIntent("deep_research", preferences, deepContext);
 
     let accepted: DeepResearchAccepted;
     if (input.mode === "branch") {
@@ -133,7 +161,7 @@ export class DeepResearchService {
         id: randomUUID(), sessionId: selection.sessionId, selectionId: selection.id,
         status: "active", createdAt: now, updatedAt: now,
       };
-      const { inputMessage, outputMessage, task } = await this.buildFirstTurn(selection.sessionId, branch.id, firstTurnContent, idempotencyKey, now, preferences);
+      const { inputMessage, outputMessage, task } = await this.buildFirstTurn(selection.sessionId, branch.id, firstTurnContent, idempotencyKey, now, preferences, executionIntent);
       accepted = await this.store.createResearchBranch(originSession, branch, inputMessage, outputMessage, task, preferences);
     } else {
       const session: ResearchSessionRecord = {
@@ -146,7 +174,7 @@ export class DeepResearchService {
         createdAt: now,
         updatedAt: now,
       };
-      const { inputMessage, outputMessage, task } = await this.buildFirstTurn(session.id, undefined, firstTurnContent, idempotencyKey, now, preferences);
+      const { inputMessage, outputMessage, task } = await this.buildFirstTurn(session.id, undefined, firstTurnContent, idempotencyKey, now, preferences, executionIntent);
       accepted = await this.store.createOriginResearchSession(session, inputMessage, outputMessage, task, preferences);
     }
     this.scheduleTask(accepted.task.id);
@@ -200,22 +228,28 @@ export class DeepResearchService {
       id: randomUUID(), sessionId: branch.sessionId, nodeId: branch.id, branchId: branch.id, role: "assistant",
       content: "", status: "pending", createdAt: now, updatedAt: now,
     };
-    const currentPreferences = node.composerPreferences ?? DEFAULT_COMPOSER_PREFERENCES;
+    const currentPreferences = normalizeComposerPreferences(node.composerPreferences);
     const preferences: ComposerPreferences = {
-      allowWebSearch: options.allowWebSearch ?? currentPreferences.allowWebSearch,
+      webSearchMode: options.webSearchMode ?? (options.allowWebSearch === undefined ? currentPreferences.webSearchMode : options.allowWebSearch ? "required" : "off") ?? "off",
       thinkingEnabled: options.thinkingEnabled ?? currentPreferences.thinkingEnabled,
     };
-    const allowWebSearch = preferences.allowWebSearch;
-    const route = await this.options.research.resolveTaskRoute(true, preferences.thinkingEnabled);
+    const originSelection = this.store.getResearchSelection(branch.selectionId);
+    if (!originSelection) throw new DeepResearchValidationError("深入研究上下文已不可用，无法继续该分支。");
+    const executionIntent = await this.options.research.resolveExecutionIntent(
+      "deep_research",
+      preferences,
+      frozenDeepResearchContext(originSelection, "branch", session.title),
+    );
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId: branch.sessionId, nodeId: branch.id, inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
       idempotencyKey, status: "queued", retryable: false,
-      provider: route.provider,
-      model: route.model,
+      provider: executionIntent.model.provider,
+      model: executionIntent.model.model,
       promptVersion: RESEARCH_CHAT_PROMPT_VERSION,
-      allowWebSearch,
-      thinkingEnabled: route.thinkingEnabled,
-      ...(allowWebSearch ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
+      webSearchMode: executionIntent.webSearch.mode,
+      executionIntent,
+      thinkingEnabled: executionIntent.thinking.applied,
+      ...(executionIntent.webSearch.mode === "required" ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
       createdAt: now, updatedAt: now,
     };
     const accepted = await this.store.createResearchTurnForNode({
@@ -233,6 +267,7 @@ export class DeepResearchService {
     idempotencyKey: string,
     now: string,
     preferences: ComposerPreferences,
+    executionIntent: ResearchExecutionIntent,
   ): Promise<{ inputMessage: ResearchMessageRecord; outputMessage: ResearchMessageRecord; task: ResearchTaskRecord }> {
     const inputMessage: ResearchMessageRecord = {
       id: randomUUID(), sessionId, branchId, role: "user",
@@ -242,17 +277,16 @@ export class DeepResearchService {
       id: randomUUID(), sessionId, branchId, role: "assistant",
       content: "", status: "pending", createdAt: now, updatedAt: now,
     };
-    const allowWebSearch = preferences.allowWebSearch;
-    const route = await this.options.research.resolveTaskRoute(true, preferences.thinkingEnabled);
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId, inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
       idempotencyKey, status: "queued", retryable: false,
-      provider: route.provider,
-      model: route.model,
+      provider: executionIntent.model.provider,
+      model: executionIntent.model.model,
       promptVersion: DEEP_RESEARCH_PROMPT_VERSION,
-      allowWebSearch,
-      thinkingEnabled: route.thinkingEnabled,
-      ...(allowWebSearch ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
+      webSearchMode: executionIntent.webSearch.mode,
+      executionIntent,
+      thinkingEnabled: executionIntent.thinking.applied,
+      ...(executionIntent.webSearch.mode === "required" ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
       createdAt: now, updatedAt: now,
     };
     return { inputMessage, outputMessage, task };
@@ -286,9 +320,9 @@ export class NodeGrowthService {
 
     const now = new Date().toISOString();
     const firstTurnContent = input.query?.trim() || defaultFirstTurnContent(selection);
-    const inherited = parentNode.composerPreferences ?? DEFAULT_COMPOSER_PREFERENCES;
+    const inherited = normalizeComposerPreferences(parentNode.composerPreferences);
     const preferences: ComposerPreferences = {
-      allowWebSearch: input.allowWebSearch ?? inherited.allowWebSearch,
+      webSearchMode: input.webSearchMode ?? (input.allowWebSearch === undefined ? inherited.webSearchMode : input.allowWebSearch ? "required" : "off") ?? "off",
       thinkingEnabled: input.thinkingEnabled ?? inherited.thinkingEnabled,
     };
     const node: ResearchNodeRecord = {
@@ -309,18 +343,25 @@ export class NodeGrowthService {
       id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id, role: "assistant",
       content: "", status: "pending", createdAt: now, updatedAt: now,
     };
-    const allowWebSearch = preferences.allowWebSearch;
-    const route = await this.options.research.resolveTaskRoute(true, preferences.thinkingEnabled);
+    const contentTitle = selection.anchor.kind === "snapshot"
+      ? this.store.getResearchContentSnapshot(selection.anchor.contentSnapshotId)?.title
+      : session.title;
+    const executionIntent = await this.options.research.resolveExecutionIntent(
+      "deep_research",
+      preferences,
+      frozenDeepResearchContext(selection, "branch", contentTitle),
+    );
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id,
       inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
       idempotencyKey, status: "queued", retryable: false,
-      provider: route.provider,
-      model: route.model,
+      provider: executionIntent.model.provider,
+      model: executionIntent.model.model,
       promptVersion: DEEP_RESEARCH_PROMPT_VERSION,
-      allowWebSearch,
-      thinkingEnabled: route.thinkingEnabled,
-      ...(allowWebSearch ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
+      webSearchMode: executionIntent.webSearch.mode,
+      executionIntent,
+      thinkingEnabled: executionIntent.thinking.applied,
+      ...(executionIntent.webSearch.mode === "required" ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
       createdAt: now, updatedAt: now,
     };
     const accepted = await this.store.createResearchChildNode(parentNode, node, selection, inputMessage, outputMessage, task);
@@ -372,7 +413,7 @@ export class NodeGrowthService {
       parentNodeId: parentNode.id,
       originSelectionId: selection.id,
       status: "active",
-      composerPreferences: { ...(parentNode.composerPreferences ?? DEFAULT_COMPOSER_PREFERENCES) },
+      composerPreferences: normalizeComposerPreferences(parentNode.composerPreferences),
       createdAt: now,
       updatedAt: now,
     };
@@ -390,7 +431,7 @@ export class NodeGrowthService {
       idempotencyKey, status: "completed", retryable: false,
       provider: preview.provider, model: preview.model,
       promptVersion: preview.promptVersion,
-      allowWebSearch: false,
+      webSearchMode: "off",
       groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 },
       createdAt: now, updatedAt: now, startedAt: now, completedAt: now,
     };

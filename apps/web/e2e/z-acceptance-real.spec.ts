@@ -716,7 +716,7 @@ interface RealAssistantMessage {
 interface RealNodeView {
   node: { id: string; parentNodeId?: string | null; originSelectionId?: string | null; isFusionNode?: boolean };
   messages: RealAssistantMessage[];
-  tasks: Array<{ id: string; status: string; allowWebSearch?: boolean; groundingScope?: { status: string } }>;
+  tasks: Array<{ id: string; status: string; webSearchMode?: "off" | "required"; groundingScope?: { status: string } }>;
   groundingSources?: Array<{ id: string }>;
   citations?: Array<{ id: string; messageId: string; blockOrdinal: number; markerOffset: number }>;
   termDetections?: Record<string, { terms: RealTermMarker[] }>;
@@ -1141,7 +1141,7 @@ test("弱标记场景八：联网回答的引用锚点与弱标记一致落位",
   test.setTimeout(1_200_000);
   const consoleIssues = watchConsole(page);
   await pairAndOpen(page, "/research/new");
-  const toggle = page.getByRole("button", { name: "开启联网搜索" });
+  const toggle = page.getByRole("button", { name: "开启必须联网" });
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
   await toggle.click();
   const sessionId = await submitQuestion(page, "请介绍 2026 年冬奥会的举办城市、开幕时间和新增比赛项目。");

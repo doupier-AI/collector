@@ -468,6 +468,7 @@ function normalizeValue(value: unknown, key?: string): unknown {
     .replace(/aq-input:[0-9a-f-]{36}/gi, "aq-input:<normalized>")
     .replace(/aq-output:[0-9a-f-]{36}/gi, "aq-output:<normalized>")
     .replace(/evidence-bundle:[0-9a-f]{20}/gi, "evidence-bundle:<normalized>")
+    .replace(/need:[0-9a-f]{20}/gi, "need:<normalized>")
     .replace(/\b[0-9a-f]{64}\b/gi, "<sha256>");
   return value;
 }

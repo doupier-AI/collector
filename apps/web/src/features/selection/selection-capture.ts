@@ -57,7 +57,7 @@ export function readContentContext(container: Element): SelectionContentContext 
     blockIds: blocks.map((block) => block.getAttribute("data-block-id") ?? ""),
     blockTexts: blocks.map((block) => {
       const textElement = block.matches("[data-block-text]") ? block : block.querySelector<HTMLElement>("[data-block-text]");
-      return (textElement ?? block).textContent ?? "";
+      return selectableText(textElement ?? block);
     }),
   };
 }
@@ -172,24 +172,34 @@ function resolveEndpoint(node: Node, offset: number): ResolvedEndpoint | undefin
  * 文本节点直接累加；元素端点按前 offset 个子节点的文本长度折算。
  */
 export function textOffsetWithin(root: Node, node: Node, offset: number): number | undefined {
-  let extra: number;
-  if (node.nodeType === Node.TEXT_NODE) {
-    extra = offset;
-  } else {
-    extra = 0;
-    const children = node.childNodes;
-    for (let i = 0; i < offset && i < children.length; i += 1) {
-      extra += (children.item(i)?.textContent ?? "").length;
+  if (!root.contains(node) && root !== node) return undefined;
+  if (node instanceof Element && node.closest("[data-markdown-decoration]")) return undefined;
+  if (node.parentElement?.closest("[data-markdown-decoration]")) return undefined;
+  let result: number | undefined;
+  let consumed = 0;
+  const visit = (current: Node): boolean => {
+    if (current instanceof Element && current.matches("[data-markdown-decoration]")) return false;
+    if (current === node) {
+      if (current.nodeType === Node.TEXT_NODE) consumed += Math.min(offset, current.textContent?.length ?? 0);
+      else for (let index = 0; index < Math.min(offset, current.childNodes.length); index += 1) consumed += selectableText(current.childNodes.item(index)!).length;
+      result = consumed;
+      return true;
     }
-  }
-  let current: Node | null = node;
-  while (current && current !== root) {
-    let previous = current.previousSibling;
-    while (previous) {
-      extra += (previous.textContent ?? "").length;
-      previous = previous.previousSibling;
+    if (current.nodeType === Node.TEXT_NODE) {
+      consumed += current.textContent?.length ?? 0;
+      return false;
     }
-    current = current.parentNode;
-  }
-  return current === root ? extra : undefined;
+    for (const child of [...current.childNodes]) if (visit(child)) return true;
+    return false;
+  };
+  visit(root);
+  return result;
+}
+
+function selectableText(root: Node): string {
+  if (root instanceof Element && root.matches("[data-markdown-decoration]")) return "";
+  if (root.nodeType === Node.TEXT_NODE) return root.textContent ?? "";
+  let text = "";
+  for (const child of [...root.childNodes]) text += selectableText(child);
+  return text;
 }

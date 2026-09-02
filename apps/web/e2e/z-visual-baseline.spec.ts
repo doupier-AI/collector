@@ -291,6 +291,24 @@ test.describe("#44 视觉回归基线", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
+  test("窄屏阅读页：回答版式、执行过程与输入区保持可用", async ({ page }) => {
+    const issues = trackBrowserIssues(page);
+    freezeClock(page);
+    await page.setViewportSize({ width: 320, height: 720 });
+    await pinModelStatus(page);
+    await openSession(page);
+    await expect(page.locator(".turn-card")).toHaveCount(1);
+    await closeSidebars(page);
+
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await expect(page).toHaveScreenshot("node-reading-narrow", {
+      fullPage: true,
+      mask: dynamicTimeMasks(page),
+      maskColor: "#FFFFFF",
+    });
+    expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
+  });
+
   test("长文轮次卡片：章节共用一张卡片 + 悬停低表面提升", async ({ page }, testInfo) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);

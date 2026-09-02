@@ -23,6 +23,13 @@ export function applyNodeEvent(view: ResearchNodeView, event: ResearchTaskEvent)
     case "delta":
     case "citation_candidate":
       return { ...view, messages: upsertMessage(view.messages, event.message) };
+    case "execution":
+      return {
+        ...view,
+        tasks: view.tasks.map((task) => task.id === event.taskId
+          ? { ...task, executionEvents: [...(task.executionEvents ?? []), event.execution] }
+          : task),
+      };
   }
 }
 

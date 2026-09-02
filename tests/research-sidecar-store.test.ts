@@ -291,7 +291,7 @@ test("v50 cleans only generated legacy controls and migrates inline markers to t
     (id, session_id, node_id, branch_id, role, status, created_at, updated_at, record_json)
     VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`)
     .run(userMessage.id, userMessage.sessionId, userMessage.nodeId!, userMessage.role, userMessage.status, userMessage.createdAt, userMessage.updatedAt, JSON.stringify(userMessage));
-  db.prepare("DELETE FROM schema_migrations WHERE version = 50").run();
+  db.prepare("DELETE FROM schema_migrations WHERE version >= 50").run();
   harness.store.close();
 
   migrated = new SqliteStore(harness.databasePath);

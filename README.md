@@ -50,6 +50,7 @@ npm.cmd run preview:from-main
 ## 现行文档
 
 - [产品模块](docs/product/README.md)：已确认的产品含义、模块边界和跨模块不变量。
+- [文档维护](docs/DOCUMENTATION.md)：事实分工、内容归属和现状写作规则。
 - [技术架构](docs/ARCHITECTURE.md)：稳定的技术依赖、运行边界和代码导航。
 - [工程协作](docs/ENGINEERING.md)：实施、验证、并行、任务与提交规则。
 - [人工验收](docs/ACCEPTANCE.md)：仅在用户主动触发时执行的低频体验验收。

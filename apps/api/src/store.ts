@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { DEFAULT_COMPOSER_PREFERENCES, LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, hashBodyContent, researchBodyVersionId, resolveResearchStableLocation, validateResearchStableLocation, type AnswerPlan, type ComposerPreferences, type ConversationContext, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchContextAssemblySnapshot, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSidecarInvalidReason, type ResearchSidecarRecord, type ResearchSidecarRecordQuery, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageBodyRecord, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchReasoningRecord, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId, toResearchMessageBody } from "@collector/capture-contracts";
+import { DEFAULT_COMPOSER_PREFERENCES, LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, hashBodyContent, normalizeComposerPreferences, researchBodyVersionId, resolveResearchStableLocation, validateResearchStableLocation, type AnswerPlan, type ComposerPreferences, type ConversationContext, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchContextAssemblySnapshot, type ResearchEdgeRecord, type ResearchExecutionEventRecord, type ResearchExecutionIntent, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSidecarInvalidReason, type ResearchSidecarRecord, type ResearchSidecarRecordQuery, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageBodyRecord, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchReasoningRecord, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ResearchWebSearchAudit, type ProjectRecord, researchEdgeId, toResearchMessageBody } from "@collector/capture-contracts";
 import { contextExplanationCodes, deriveMessageBlocks, observeContextAssembly } from "@collector/capture-contracts";
 import type { ResearchCitationCandidate } from "@collector/capture-contracts";
 import type { ModelCapabilityProbeTask, ModelCapabilitySnapshot } from "@collector/capture-contracts";
@@ -36,7 +36,7 @@ import {
 export type ObservabilityRecordSource = "research" | "import" | "fusion" | "chapter";
 
 function withComposerPreferences(node: ResearchNodeRecord): ResearchNodeRecord {
-  return node.composerPreferences ? node : { ...node, composerPreferences: { ...DEFAULT_COMPOSER_PREFERENCES } };
+  return { ...node, composerPreferences: normalizeComposerPreferences(node.composerPreferences) };
 }
 
 export interface ObservabilityRecordRow {
@@ -217,6 +217,7 @@ export interface ResearchStore extends ResearchSidecarStore, ResearchTermMarkerS
   createResearchTurnForNode(node: ResearchNodeRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted>;
   claimResearchTask(id: string, provider?: string, model?: string, promptVersion?: string): ResearchTaskRecord | undefined;
   appendResearchTaskDelta(id: string, delta: string, reasoningDelta?: string): Promise<void>;
+  appendResearchTaskExecutionEvent(id: string, execution: ResearchExecutionEventRecord): Promise<void>;
   appendResearchTaskCitationCandidate(id: string, candidate: ResearchCitationCandidate): Promise<void>;
   completeResearchTask(id: string): Promise<void>;
   failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
@@ -244,6 +245,8 @@ export interface ResearchStore extends ResearchSidecarStore, ResearchTermMarkerS
   saveResearchTaskConversationContextSnapshot(taskId: string, snapshot: ConversationContext): Promise<void>;
   /** 回答规划：保存当前生成尝试的版本化派生计划。 */
   saveResearchTaskAnswerPlanSnapshot(taskId: string, snapshot: AnswerPlan): Promise<void>;
+  saveResearchTaskExecutionIntent(taskId: string, intent: ResearchExecutionIntent): Promise<void>;
+  saveResearchTaskWebSearchAudit(taskId: string, audit: ResearchWebSearchAudit): Promise<void>;
   listResearchTaskEvents(taskId: string, afterId?: number): ResearchTaskEvent[];
   listRecoverableResearchTasks(): ResearchTaskRecord[];
   failInterruptedResearchTasks(): number;
@@ -295,6 +298,7 @@ export interface DeepResearchStore {
   getResearchMessage(id: string): ResearchMessageRecord | undefined;
   getResearchMessageBody(id: string): ResearchMessageBodyRecord | undefined;
   getResearchSelection(id: string): ResearchSelectionRecord | undefined;
+  getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
   /** 术语生长按锚点复用既有选区：需要会话级选区清单（ADR-0029）。 */
   listResearchSelections(sessionId: string): ResearchSelectionRecord[];
   listResearchMessages(sessionId: string): ResearchMessageRecord[];
@@ -447,6 +451,7 @@ export interface CollectorStore
   createResearchTurn(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted>;
   claimResearchTask(id: string, provider?: string, model?: string, promptVersion?: string): ResearchTaskRecord | undefined;
   appendResearchTaskDelta(id: string, delta: string, reasoningDelta?: string): Promise<void>;
+  appendResearchTaskExecutionEvent(id: string, execution: ResearchExecutionEventRecord): Promise<void>;
   appendResearchTaskCitationCandidate(id: string, candidate: ResearchCitationCandidate): Promise<void>;
   completeResearchTask(id: string): Promise<void>;
   failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
@@ -465,6 +470,8 @@ export interface CollectorStore
   saveResearchTaskContextAssemblySnapshot(taskId: string, snapshot: ResearchContextAssemblySnapshot): Promise<void>;
   saveResearchTaskConversationContextSnapshot(taskId: string, snapshot: ConversationContext): Promise<void>;
   saveResearchTaskAnswerPlanSnapshot(taskId: string, snapshot: AnswerPlan): Promise<void>;
+  saveResearchTaskExecutionIntent(taskId: string, intent: ResearchExecutionIntent): Promise<void>;
+  saveResearchTaskWebSearchAudit(taskId: string, audit: ResearchWebSearchAudit): Promise<void>;
   listResearchTaskEvents(taskId: string, afterId?: number): ResearchTaskEvent[];
   listRecoverableResearchTasks(): ResearchTaskRecord[];
   failInterruptedResearchTasks(): number;
@@ -1434,19 +1441,16 @@ export class SqliteStore implements CollectorStore {
     return claimed;
   }
 
-  async appendResearchTaskDelta(id: string, delta: string, reasoningDelta?: string): Promise<void> {
+  async appendResearchTaskDelta(id: string, delta: string, _reasoningDelta?: string): Promise<void> {
     this.transaction(() => {
       const task = this.getResearchTask(id);
       if (!task || task.status !== "running") throw new Error("Research task is not running");
       const current = this.getResearchMessage(task.outputMessageId);
       if (!current) throw new Error("Research output message not found");
       const now = new Date().toISOString();
-      const reasoningMessage = reasoningDelta
-        ? this.appendReasoningDelta(task, current, reasoningDelta, now)
-        : current;
       const message: ResearchMessageRecord = {
-        ...reasoningMessage,
-        content: reasoningMessage.content + delta,
+        ...current,
+        content: current.content + delta,
         status: "streaming",
         updatedAt: now,
       };
@@ -1454,6 +1458,14 @@ export class SqliteStore implements CollectorStore {
       const updatedTask: ResearchTaskRecord = { ...task, updatedAt: now };
       this.updateResearchTask(updatedTask);
       this.insertResearchEvent(id, "delta", now, { delta, message });
+    });
+  }
+
+  async appendResearchTaskExecutionEvent(id: string, execution: ResearchExecutionEventRecord): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchTask(id);
+      if (!task) throw new Error("Research task not found");
+      this.insertResearchEvent(id, "execution", new Date().toISOString(), { execution: structuredClone(execution) });
     });
   }
 
@@ -1767,10 +1779,38 @@ export class SqliteStore implements CollectorStore {
     });
   }
 
+  async saveResearchTaskExecutionIntent(taskId: string, intent: ResearchExecutionIntent): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchTask(taskId);
+      if (!task) throw new Error("Research task not found");
+      this.updateResearchTask({
+        ...task,
+        provider: intent.model.provider,
+        model: intent.model.model,
+        webSearchMode: intent.webSearch.mode,
+        thinkingEnabled: intent.thinking.applied,
+        executionIntent: structuredClone(intent),
+        updatedAt: new Date().toISOString(),
+      });
+    });
+  }
+
+  async saveResearchTaskWebSearchAudit(taskId: string, audit: ResearchWebSearchAudit): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchTask(taskId);
+      if (!task) throw new Error("Research task not found");
+      this.updateResearchTask({ ...task, webSearchAudit: structuredClone(audit), updatedAt: new Date().toISOString() });
+    });
+  }
+
   listResearchTaskEvents(taskId: string, afterId = 0): ResearchTaskEvent[] {
     const rows = this.db().prepare("SELECT sequence, event_type, created_at, data_json FROM research_task_events WHERE task_id = ? AND sequence > ? ORDER BY sequence")
-      .all(taskId, afterId) as Array<{ sequence: number; event_type: "delta" | "citation_candidate" | "completed" | "failed" | "stopped"; created_at: string; data_json: string }>;
-    return rows.map((row) => ({ id: row.sequence, type: row.event_type, createdAt: row.created_at, ...JSON.parse(row.data_json) }) as ResearchTaskEvent);
+      .all(taskId, afterId) as Array<{ sequence: number; event_type: "delta" | "citation_candidate" | "execution" | "completed" | "failed" | "stopped"; created_at: string; data_json: string }>;
+    return rows.map((row) => {
+      const event = { id: row.sequence, type: row.event_type, createdAt: row.created_at, ...JSON.parse(row.data_json) } as ResearchTaskEvent;
+      if (event.type === "execution") return { ...event, taskId };
+      return "message" in event && event.message ? { ...event, message: this.publicResearchMessage(event.message) } : event;
+    });
   }
 
   listRecoverableResearchTasks(): ResearchTaskRecord[] {
@@ -2419,7 +2459,7 @@ export class SqliteStore implements CollectorStore {
       this.db().prepare(`UPDATE research_temporary_fusion_nodes
         SET confirmed_at = ?, updated_at = ?, record_json = ? WHERE id = ? AND confirmed_at IS NULL`)
         .run(confirmedAt, confirmedAt, JSON.stringify(closedTemporary), temporary.id);
-      result = { fusionNode, session, snapshot };
+      result = { fusionNode: withComposerPreferences(fusionNode), session, snapshot };
     });
     if (!result) throw new Error("Temporary fusion confirmation was not persisted");
     return result;
@@ -3628,47 +3668,26 @@ export class SqliteStore implements CollectorStore {
       .run(message.status, message.updatedAt, JSON.stringify(persisted), message.id);
   }
 
-  /** 消息 JSON 只保存正文与独立记录关联；reasoning 文本始终由专表组装。 */
+  /** New writes contain body state only. Historical reasoning rows remain in the legacy table. */
   private persistedResearchMessage(message: ResearchMessageRecord): ResearchMessageRecord {
-    const { reasoning: _reasoningView, ...persisted } = message;
+    const { reasoning: _reasoningView, reasoningRecordId: _reasoningRecordId, ...persisted } = message;
     if (!persisted.versions) return persisted;
     return {
       ...persisted,
-      versions: persisted.versions.map(({ reasoning: _versionReasoningView, ...version }) => version),
+      versions: persisted.versions.map(({ reasoning: _versionReasoningView, reasoningRecordId: _versionReasoningRecordId, ...version }) => version),
     };
   }
 
   private hydrateResearchMessagesReasoning(messages: ResearchMessageRecord[]): ResearchMessageRecord[] {
-    if (!messages.length) return [];
-    const placeholders = messages.map(() => "?").join(", ");
-    const records = this.listRecords<ResearchReasoningRecord>(
-      `SELECT record_json FROM research_reasoning_records WHERE message_id IN (${placeholders})`,
-      ...messages.map((message) => message.id),
-    );
-    const byId = new Map(records.map((record) => [record.id, record]));
-    return messages.map((message) => this.hydrateResearchMessageReasoning(message, byId));
+    return messages.map((message) => this.publicResearchMessage(message));
   }
 
-  private hydrateResearchMessageReasoning(
-    message: ResearchMessageRecord,
-    recordsById: ReadonlyMap<string, ResearchReasoningRecord>,
-  ): ResearchMessageRecord {
-    const resolve = (id: string | undefined): ResearchReasoningRecord | undefined => {
-      if (!id) return undefined;
-      const record = recordsById.get(id);
-      if (!record || record.messageId !== message.id) {
-        throw new Error(`Research message ${message.id} references missing reasoning record ${id}`);
-      }
-      return record;
-    };
-    const current = resolve(message.reasoningRecordId);
-    const versions = message.versions?.map((version) => {
-      const reasoning = resolve(version.reasoningRecordId);
-      return reasoning ? { ...version, reasoning: reasoning.content } : version;
-    });
+  /** Ordinary store/API projections never expose current or historical provider reasoning. */
+  private publicResearchMessage(message: ResearchMessageRecord): ResearchMessageRecord {
+    const { reasoning: _reasoning, reasoningRecordId: _reasoningRecordId, ...publicMessage } = message;
+    const versions = publicMessage.versions?.map(({ reasoning: _versionReasoning, reasoningRecordId: _versionReasoningRecordId, ...version }) => version);
     return {
-      ...message,
-      ...(current ? { reasoning: current.content } : {}),
+      ...publicMessage,
       ...(versions ? { versions } : {}),
     };
   }
@@ -3730,7 +3749,7 @@ export class SqliteStore implements CollectorStore {
       .run(task.status, task.retryable ? 1 : 0, task.updatedAt, JSON.stringify(task), task.id);
   }
 
-  private insertResearchEvent(taskId: string, type: "delta" | "citation_candidate" | "completed" | "failed" | "stopped", createdAt: string, data: unknown): void {
+  private insertResearchEvent(taskId: string, type: "delta" | "citation_candidate" | "execution" | "completed" | "failed" | "stopped", createdAt: string, data: unknown): void {
     this.db().prepare("INSERT INTO research_task_events (task_id, event_type, created_at, data_json) VALUES (?, ?, ?, ?)")
       .run(taskId, type, createdAt, JSON.stringify(data));
   }

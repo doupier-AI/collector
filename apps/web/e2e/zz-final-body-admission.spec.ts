@@ -5,7 +5,7 @@ test("联网确认定稿的显式协议污染只保留干净前缀并如实失�
   const browserIssues = trackBrowserIssues(page);
   await page.setViewportSize({ width: 320, height: 900 });
   await pairAndOpen(page, "/research/new");
-  await page.getByRole("button", { name: "开启联网搜索" }).click();
+  await page.getByRole("button", { name: "开启必须联网" }).click();
   await page.getByLabel("你的问题").fill("验证最终正文污染");
   await page.getByRole("button", { name: "开始研究" }).click();
   await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });

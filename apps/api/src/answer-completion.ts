@@ -52,6 +52,7 @@ function evaluateCheck(check: AnswerPlanMachineCheck, input: AnswerCompletionInp
       : passed(check);
   }
   if (check.kind === "format") return evaluateFormat(check, input.body);
+  if (check.kind === "min_length" || check.kind === "max_length") return evaluateLength(check, input.body);
   if (check.kind === "required_heading") {
     if (!check.expected) return { checkId: check.id, status: "not_evaluated", reason: "missing_expected_heading" };
     return input.body.split(/\r?\n/).some((line) => line.trim() === check.expected)
@@ -73,6 +74,17 @@ function evaluateCheck(check: AnswerPlanMachineCheck, input: AnswerCompletionInp
     return valid ? passed(check) : failed(check, "citation_range_invalid");
   }
   return { checkId: check.id, status: "not_evaluated", reason: "unsupported_machine_check" };
+}
+
+function evaluateLength(check: AnswerPlanMachineCheck, body: string): AnswerCompletionCheckResult {
+  const parsed = check.expected?.match(/^(characters|words):(\d{1,7})$/);
+  if (!parsed) return { checkId: check.id, status: "not_evaluated", reason: "invalid_length_contract" };
+  const limit = Number(parsed[2]);
+  const actual = parsed[1] === "words"
+    ? (body.trim().match(/\b[\p{L}\p{N}'’-]+\b/gu) ?? []).length
+    : Array.from(body.replace(/\s/gu, "")).length;
+  if (check.kind === "min_length") return actual >= limit ? passed(check) : failed(check, "explicit_min_length_unsatisfied");
+  return actual <= limit ? passed(check) : failed(check, "explicit_max_length_unsatisfied");
 }
 
 function evaluateFormat(check: AnswerPlanMachineCheck, body: string): AnswerCompletionCheckResult {

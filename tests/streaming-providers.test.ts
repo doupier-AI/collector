@@ -129,20 +129,16 @@ test("未声明 reasoning 输出能力的兼容端点忽略同名字段，只产
   assert.deepEqual(events.map((event) => event.type), ["delta", "done"]);
 });
 
-test("网关 writeResearchBodyStream：reasoning 经 onReasoning 旁路转发，正文走 trim 通道互不污染", async () => {
+test("网关 writeResearchBodyStream：供应商 reasoning 在正文边界丢弃且不污染输出", async () => {
   const provider = new FakeProvider([{ content: "  正文内容", reasoning: "深度推理过程", model: "fake-model", usage: { inputTokens: 10, outputTokens: 20 } }]);
   const gateway = new ModelGateway(provider, { model: "fake-model" });
-  const reasoningChunks: string[] = [];
   const deltas: string[] = [];
-  for await (const delta of gateway.writeResearchBodyStream([{ role: "user", content: "问题" }], {
-    onReasoning: (text) => reasoningChunks.push(text),
-  })) {
+  for await (const delta of gateway.writeResearchBodyStream([{ role: "user", content: "问题" }])) {
     deltas.push(delta);
   }
-  assert.equal(reasoningChunks.join(""), "深度推理过程");
-  // trim 不变量：正文首尾空白被修剪，与思考内容严格分离。
+  assert.doesNotMatch(deltas.join(""), /深度推理过程/);
   assert.equal(deltas.join(""), "正文内容");
-  // 思考开关默认关闭（ADR-0035）：未显式开启时请求不带 thinking 开启参数。
+  // thinking 控制模型计算方式，不授权返回或保存原始推理。
   assert.equal(provider.calls[0]?.thinking, false);
 });
 

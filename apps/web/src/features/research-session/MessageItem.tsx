@@ -1,7 +1,7 @@
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { ContextExplanationCode, ResearchCitationRecord, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchSliceRecord, ResearchTaskRecord, ResearchTermPreviewInput, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
+import type { ContextExplanationCode, ResearchCitationRecord, ResearchExecutionEventRecord, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchSliceRecord, ResearchTaskRecord, ResearchTermPreviewInput, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
 import { deriveMessageBlocks, messageContentBlockId, splitBlockHeading } from "@collector/capture-contracts";
 import { MarkdownContent, type RenderedTermMarker } from "../../components/MarkdownContent";
 import { subscribeToGroundingSourceReveal } from "../../components/grounding-source-navigation";
@@ -67,10 +67,6 @@ export function MessageItem({ message, task, retrying = false, onRetry, onRegene
     ? groundingSources.filter((source) => source.runId === task.groundingScope?.runId)
     : [];
 
-  const selectedReasoning = viewingVersion ? viewingVersion.reasoning : message.reasoning;
-  const reasoningState = selectedReasoning?.trim()
-    ? (viewingVersion ? "history" : currentReasoningState(message, task))
-    : undefined;
   // ADR-0035：操作入口只在完成/停止后显示；复制取当前查看版本（旧版切换时复制旧版）。
   const viewContent = viewingVersion?.content ?? message.content;
   const showActions = (message.status === "completed" || message.status === "stopped") && !viewingVersion;
@@ -78,7 +74,7 @@ export function MessageItem({ message, task, retrying = false, onRetry, onRegene
 
   return (
     <li className="message message--assistant" data-message-id={message.id}>
-      {reasoningState ? <ReasoningDisclosure key={versionIndex} reasoning={selectedReasoning!} state={reasoningState} /> : null}
+      {!viewingVersion && task ? <ExecutionDisclosure task={task} /> : null}
       {message.status === "failed" ? (
         <FailedBody message={message} task={task} retrying={retrying} onRetry={onRetry} />
       ) : (
@@ -1040,44 +1036,49 @@ function ContextExplanationNote({ task }: { task?: ResearchTaskRecord }) {
   return <p className="message__status message__context-scope" data-testid="context-explanation-note">本轮上下文：{codes.map((code) => CONTEXT_EXPLANATION_COPY[code]).join("；")}。</p>;
 }
 
-/**
- * ADR-0035：深度思考折叠区。生成期间默认折叠、展开后逐字流式显示推理内容；
- * 完成后折叠区保留，可随时展开回看完整思考过程。思考文字不进入正文与弱标记管线。
- */
-type ReasoningDisclosureState = "streaming" | "completed" | "paused" | "stopped" | "failed" | "history";
-
-function currentReasoningState(message: ResearchMessageRecord, task?: ResearchTaskRecord): Exclude<ReasoningDisclosureState, "history"> {
-  if (message.status === "failed" || task?.status === "failed") return "failed";
-  if (message.status === "stopped" || task?.status === "stopped") return "stopped";
-  if (message.status === "paused" || task?.status === "paused") return "paused";
-  if (message.status === "completed" || task?.status === "completed") return "completed";
-  return "streaming";
-}
-
-const REASONING_LABELS: Record<ReasoningDisclosureState, string> = {
-  streaming: "深度思考中…",
-  completed: "思考过程",
-  paused: "思考过程（已暂停）",
-  stopped: "思考过程（已停止）",
-  failed: "思考过程（生成失败）",
-  history: "历史思考过程",
+const EXECUTION_STAGE_LABELS: Record<ResearchExecutionEventRecord["stage"], string> = {
+  planning: "规划回答",
+  web_search: "联网搜索",
+  source_reading: "读取来源",
+  model_analysis: "分析材料",
+  drafting: "起草回答",
+  finalizing: "完成整理",
+  degradation: "执行降级",
 };
 
-function ReasoningDisclosure({ reasoning, state }: { reasoning: string; state: ReasoningDisclosureState }) {
+const EXECUTION_STATUS_LABELS: Record<ResearchExecutionEventRecord["status"], string> = {
+  started: "进行中",
+  completed: "已完成",
+  failed: "失败",
+};
+
+function ExecutionDisclosure({ task }: { task: ResearchTaskRecord }) {
   const [expanded, setExpanded] = useState(false);
   const bodyId = useId();
-  const label = REASONING_LABELS[state];
-  const toggleLabel = expanded ? `收起${label}` : `展开${label}`;
+  const events = task.executionEvents ?? [];
+  const toggleLabel = expanded ? "收起执行过程" : "展开执行过程";
   return (
-    <div className="reasoning" data-reasoning-state={state} aria-busy={state === "streaming"}>
-      <button type="button" className="reasoning__toggle" aria-expanded={expanded} aria-controls={bodyId} aria-label={toggleLabel} onClick={() => setExpanded((current) => !current)}>
-        <span className={expanded ? "reasoning__chevron reasoning__chevron--open" : "reasoning__chevron"} aria-hidden="true">▸</span>
-        <span>{label}</span>
-        {state === "streaming" ? <span className="reasoning__pulse" aria-hidden="true" /> : null}
+    <div className="execution-process" aria-busy={task.status === "queued" || task.status === "running"}>
+      <button type="button" className="execution-process__toggle" aria-expanded={expanded} aria-controls={bodyId} aria-label={toggleLabel} onClick={() => setExpanded((current) => !current)}>
+        <span className={expanded ? "execution-process__chevron execution-process__chevron--open" : "execution-process__chevron"} aria-hidden="true">▸</span>
+        <span>执行过程</span>
       </button>
       {expanded ? (
-        <div id={bodyId} className="reasoning__body" role="region" aria-label={label}>
-          <MarkdownContent text={reasoning} variant="insight" />
+        <div id={bodyId} className="execution-process__body" role="region" aria-label="执行过程">
+          {events.length === 0 ? <p>该任务未记录执行过程</p> : (
+            <ol className="execution-process__list">
+              {events.map((event, index) => (
+                <li key={`${event.stage}-${event.status}-${index}`}>
+                  <span>{EXECUTION_STAGE_LABELS[event.stage]}</span>
+                  <span>{EXECUTION_STATUS_LABELS[event.status]}</span>
+                  {event.query ? <span>查询：{event.query}</span> : null}
+                  {event.actualBackend ? <span>后端：{event.actualBackend}{event.usedFallback ? "（故障切换）" : ""}</span> : null}
+                  {event.sourceCount !== undefined ? <span>来源：{event.sourceCount}</span> : null}
+                  {event.reasonCode ? <span>原因：{event.reasonCode}</span> : null}
+                </li>
+              ))}
+            </ol>
+          )}
         </div>
       ) : null}
     </div>
@@ -1086,18 +1087,18 @@ function ReasoningDisclosure({ reasoning, state }: { reasoning: string; state: R
 
 function GeneratingBody({ message, task, terms, multiTurn = false }: { message: ResearchMessageRecord; task?: ResearchTaskRecord; terms: TermMarker[]; multiTurn?: boolean }) {
   const hasContent = message.content.trim().length > 0;
-  const thinking = !hasContent && (message.reasoning?.trim().length ?? 0) > 0;
   const paused = task?.status === "paused" || message.status === "paused";
   const stopped = task?.status === "stopped" || message.status === "stopped";
+  const latestStage = task?.executionEvents?.at(-1)?.stage;
   const status = stopped
     ? "已停止"
     : paused
       ? "已暂停"
-      : thinking
-        ? "深度思考中"
-        : hasContent
+      : hasContent
           ? "正在生成"
-          : task?.groundingScope?.status === "not_requested"
+          : latestStage === "web_search" || latestStage === "source_reading"
+            ? "正在联网搜索"
+            : task?.groundingScope?.status === "not_requested"
             ? "已保存，正在生成"
             : "已保存，正在请求联网";
   return (

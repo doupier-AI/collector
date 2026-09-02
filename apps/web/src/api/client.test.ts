@@ -152,7 +152,7 @@ describe("#61 stable node address API client", () => {
 
     await expect(
       client.submitResearchNodeMessage("node-1", "回收站里不应可写", "idem-key-1", {
-        allowWebSearch: false,
+        webSearchMode: "off",
         thinkingEnabled: false,
       }),
     ).rejects.toMatchObject({ status: 409, code: "session_in_trash" });

@@ -56,6 +56,20 @@ export interface WebSearchResultSet {
   backend?: SearchBackendId;
   /** 是否为回退后端 */
   usedFallback?: boolean;
+  /** Immutable execution audit fields; never inferred from result contents. */
+  requestedBackend?: SearchBackendId;
+  attemptedBackends?: SearchBackendId[];
+  failureClassification?: "timeout" | "backend_error";
+}
+
+export interface SearchExecutionPlan {
+  config: SearchConfig;
+  requestedBackend: SearchBackendId;
+  fallbackPolicy: "enabled" | "disabled";
+  available: boolean;
+  initialBackend?: SearchBackendId;
+  usedFallbackAtSelection: boolean;
+  unavailableReasonCode?: "backend_unavailable" | "no_backend_available";
 }
 
 /**
@@ -118,26 +132,74 @@ function ensureRegistry(): SearchBackendRegistry {
  * 供 Agent 工具循环中的 web_search 工具调用。
  */
 export async function webSearch(query: string, maxResults = 5): Promise<WebSearchResultSet> {
+  return webSearchWithConfig(query, maxResults, _searchConfig);
+}
+
+/** Resolve availability without calling a backend. The returned config is safe to freeze on a task. */
+export function resolveSearchExecutionPlan(config: SearchConfig = getSearchConfig()): SearchExecutionPlan {
+  const frozen = { ...config };
+  const registry = createSearchBackendRegistry(frozen);
+  try {
+    const selected = selectSearchBackend(registry, frozen.backend, frozen.fallback);
+    return {
+      config: frozen,
+      requestedBackend: frozen.backend,
+      fallbackPolicy: frozen.fallback ? "enabled" : "disabled",
+      available: true,
+      initialBackend: selected.backend.id,
+      usedFallbackAtSelection: selected.usedFallback,
+    };
+  } catch {
+    return {
+      config: frozen,
+      requestedBackend: frozen.backend,
+      fallbackPolicy: frozen.fallback ? "enabled" : "disabled",
+      available: false,
+      usedFallbackAtSelection: false,
+      unavailableReasonCode: registry.list().length ? "backend_unavailable" : "no_backend_available",
+    };
+  }
+}
+
+/** Execute against the submission-time snapshot rather than mutable global settings. */
+export async function webSearchWithConfig(query: string, maxResults: number, config: SearchConfig): Promise<WebSearchResultSet> {
   const searchStartedAt = Date.now();
-  const registry = ensureRegistry();
-  const { backend, usedFallback } = selectSearchBackend(registry, _searchConfig.backend, _searchConfig.fallback);
+  const frozen = { ...config };
+  const registry = createSearchBackendRegistry(frozen);
+  const requestedBackend = frozen.backend;
+  let selected: ReturnType<typeof selectSearchBackend>;
+  try {
+    selected = selectSearchBackend(registry, requestedBackend, frozen.fallback);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Search backend is unavailable";
+    return { query: query.trim(), total_results: 0, results: [], errorMessage: message, requestedBackend, attemptedBackends: [] };
+  }
+  const { backend, usedFallback } = selected;
+  const attemptedBackends: SearchBackendId[] = [backend.id];
 
   console.log(`[web-search] webSearch backend="${backend.id}"${usedFallback ? " (fallback)" : ""} queryChars=${query.trim().length} maxResults=${maxResults}`);
 
   try {
     const result = await backend.search(query.trim(), maxResults);
     console.log(`[web-search] webSearch ${result.errorMessage ? "error" : "completed"} backend="${backend.id}" queryChars=${result.query.length} resultCount=${result.results.length} latency=${Date.now() - searchStartedAt}ms`);
-    return { ...result, backend: backend.id, usedFallback };
+    return {
+      ...result,
+      backend: backend.id,
+      usedFallback,
+      requestedBackend,
+      attemptedBackends,
+      ...(result.errorMessage ? { failureClassification: searchFailureClassification(result.errorMessage) } : {}),
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown search error";
     console.log(`[web-search] webSearch error backend="${backend.id}" queryChars=${query.trim().length} error=${safeLogErrorKind(error)} latency=${Date.now() - searchStartedAt}ms`);
 
     // 如果启用了回退且当前后端不是回退选择，尝试用首选后端重试
-    if (_searchConfig.fallback && usedFallback) {
+    if (frozen.fallback && usedFallback) {
       // 已经是回退后端了还失败，返回错误
-      return { query: query.trim(), total_results: 0, results: [], errorMessage: message, backend: backend.id, usedFallback };
+      return { query: query.trim(), total_results: 0, results: [], errorMessage: message, backend: backend.id, usedFallback, requestedBackend, attemptedBackends, failureClassification: searchFailureClassification(error) };
     }
-    if (_searchConfig.fallback) {
+    if (frozen.fallback) {
       // 首选后端失败，尝试回退
       const FALLBACK_ORDER = ALL_SEARCH_BACKEND_IDS;
       for (const fallbackId of FALLBACK_ORDER) {
@@ -145,17 +207,23 @@ export async function webSearch(query: string, maxResults = 5): Promise<WebSearc
         const fallbackBackend = registry.get(fallbackId);
         if (!fallbackBackend) continue;
         try {
+          attemptedBackends.push(fallbackId);
           console.log(`[web-search] webSearch falling back to "${fallbackId}" after "${backend.id}" failed`);
           const fallbackResult = await fallbackBackend.search(query.trim(), maxResults);
-          return { ...fallbackResult, backend: fallbackId, usedFallback: true };
+          return { ...fallbackResult, backend: fallbackId, usedFallback: true, requestedBackend, attemptedBackends, ...(fallbackResult.errorMessage ? { failureClassification: searchFailureClassification(fallbackResult.errorMessage) } : {}) };
         } catch {
           // 继续尝试下一个
         }
       }
     }
 
-    return { query: query.trim(), total_results: 0, results: [], errorMessage: message, backend: backend.id, usedFallback };
+    return { query: query.trim(), total_results: 0, results: [], errorMessage: message, backend: backend.id, usedFallback, requestedBackend, attemptedBackends, failureClassification: searchFailureClassification(error) };
   }
+}
+
+function searchFailureClassification(error: unknown): "timeout" | "backend_error" {
+  const value = error instanceof Error ? `${error.name} ${error.message}` : String(error);
+  return /timeout|timed\s*out|abort|\u8d85时/i.test(value) ? "timeout" : "backend_error";
 }
 
 /**

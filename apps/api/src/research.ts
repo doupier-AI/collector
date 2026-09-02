@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import {
   RESEARCH_GROUNDING_MAX_SOURCES,
   DEFAULT_COMPOSER_PREFERENCES,
+  normalizeComposerPreferences,
   deriveBodyVersion,
   deriveFragmentsFromBlocks,
   deriveFragmentsFromSlices,
@@ -33,6 +34,10 @@ import {
   type ResearchContextAssemblySnapshot,
   type ResearchSliceRecord,
   type ResearchGroundingTraceEntry,
+  type ResearchExecutionEventRecord,
+  type ResearchExecutionIntent,
+  type ResearchWebSearchAudit,
+  type ResearchTaskError,
   ResearchGroundingResult,
   ResearchGroundingScenario,
   ResearchGroundingScopeStatus,
@@ -46,6 +51,7 @@ import {
   ResearchTaskRecord,
   ResearchTurnAccepted,
   type ResearchSliceContext,
+  type WebSearchMode,
   type TermIdentityVerificationRequest,
 } from "@collector/capture-contracts";
 import { FinalBodyProtocolError, FinalBodySink } from "./final-body-sink.js";
@@ -66,6 +72,7 @@ import {
 import { AnswerPlanningModule, type AnswerPlanningModelAdapter } from "./answer-planning.js";
 import { assertAnswerCompletion } from "./answer-completion.js";
 import { evidenceBundleContextCandidates } from "./evidence-preparation.js";
+import { getSearchConfig as getFrozenSearchConfig, resolveSearchExecutionPlan } from "./web-search-agent.js";
 import {
   CitationAttributionModule,
   type CitationAttributionModelBatch,
@@ -114,12 +121,10 @@ function reducedContextBudget(
     reservedOutputTokens: assembly.budget.reservedOutputTokens,
   };
 }
-/** ADR-0035：思考增量落库节流——思考期间正文可能长时间零增量，思考须独立及时落库且不逐 token 写放大。 */
-const REASONING_FLUSH_MIN_INTERVAL_MS = 250;
-const REASONING_FLUSH_MIN_CHARS = 400;
 /** 原生联网端点通常只返回整篇终稿；小正文保持细粒度，超长正文最多发布 32 次，限制累计写放大。 */
 const CONFIRMED_FINAL_MIN_CHUNK_CHARACTERS = 24;
 const CONFIRMED_FINAL_MAX_DELTAS = 32;
+const WEB_SEARCH_NO_SOURCE_NOTICE = "联网搜索已执行，但未获得可用来源；以下内容未完成外部核验。";
 
 function contextContentVersion(content: string): string {
   return createHash("sha256").update(content).digest("hex");
@@ -170,45 +175,6 @@ function contextSourceSnapshots(candidates: readonly ContextCandidate[]): Resear
 
 function contextSourceFingerprint(sources: ResearchContextAssemblySnapshot["sources"]): string {
   return createHash("sha256").update(JSON.stringify(sources)).digest("hex");
-}
-
-/**
- * reasoning 回调是同步的，SQLite 写入是异步的：本队列把每段内容只取出一次并串行落库。
- * close() 同步封住用户暂停/停止边界，边界后的供应商字节不再获得当前尝试的展示资格。
- */
-class ReasoningPersistenceQueue {
-  private buffer = "";
-  private lastFlushAt = 0;
-  private chain: Promise<void> = Promise.resolve();
-  private closed = false;
-
-  constructor(private readonly persist: (chunk: string) => Promise<void>) {}
-
-  push(text: string): void {
-    if (this.closed || !text) return;
-    this.buffer += text;
-    if (Date.now() - this.lastFlushAt >= REASONING_FLUSH_MIN_INTERVAL_MS || this.buffer.length >= REASONING_FLUSH_MIN_CHARS) {
-      this.lastFlushAt = Date.now();
-      this.flush();
-    }
-  }
-
-  flush(): Promise<void> {
-    if (this.buffer) {
-      const chunk = this.buffer;
-      this.buffer = "";
-      this.chain = this.chain.then(() => this.persist(chunk));
-      // 提前标记拒绝已被观察，避免回调触发的异步写在主流程 await 前形成未处理拒绝；
-      // 原 chain 仍保持 rejected，后续 flush/close 会把错误交给任务主流程。
-      void this.chain.catch(() => undefined);
-    }
-    return this.chain;
-  }
-
-  close(): Promise<void> {
-    this.closed = true;
-    return this.flush();
-  }
 }
 
 function confirmedFinalDisplayDeltas(content: string): string[] {
@@ -280,8 +246,10 @@ export interface ResearchGenerationRequest {
   /** Versioned derived writing plan; lower authority than every explicit user rule. */
   answerPlan?: AnswerPlan;
   sliceOrdinalStart?: number;
-  /** 本次请求是否获得用户明确授权使用联网搜索。 */
-  allowWebSearch?: boolean;
+  /** 提交时冻结的联网模式。 */
+  webSearchMode?: WebSearchMode;
+  /** All execution controls used by physical calls come from this immutable snapshot. */
+  executionIntent?: ResearchExecutionIntent;
   /** 本任务入队时按实际路由校验后的深度思考有效值。 */
   thinkingEnabled?: boolean;
   /** 深入研究第一轮：只携带当前已有材料，不含联网检索结果。 */
@@ -311,19 +279,24 @@ export interface ResearchGenerationProvider {
   readonly promptVersion?: string;
   readonly groundingCapability?: import("@collector/capture-contracts").ProviderWebGrounding;
   /** 入队前按实际 chat/research 路由再次解析模型身份与思考能力。 */
-  resolveTaskRoute?(deepResearch: boolean, requestedThinking: boolean): Promise<{ provider?: string; model?: string; thinkingEnabled: boolean }>;
+  resolveTaskRoute?(deepResearch: boolean, requestedThinking: boolean): Promise<{
+    provider?: string;
+    model?: string;
+    thinkingEnabled: boolean;
+    modelIntent?: ResearchExecutionIntent["model"];
+  }>;
   /** H3c 术语预览仍复用文本流，不参与节点回答的正式切片生成。 */
   generate(request: ResearchGenerationRequest): AsyncIterable<string>;
   /** 联网准备阶段只交付已确认定稿，或可追溯证据；不得把工作区文本伪装成正文。 */
   prepareGrounded?(request: AssembledResearchGenerationRequest & { scenario: ResearchGroundingScenario }): Promise<ResearchGroundedPreparation>;
   /** 仅证据准备结果必须经独立最终写作流转成用户正文。 */
-  writeGroundedFinalStream?(request: AssembledResearchGenerationRequest, evidence: string, options: { sources: readonly ResearchCitationSourceIdentity[]; resumeFrom?: string; signal?: AbortSignal; onStreamDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; onCitation?: (candidate: ResearchCitationCandidate) => void }): AsyncIterable<string>;
+  writeGroundedFinalStream?(request: AssembledResearchGenerationRequest, evidence: string, options: { sources: readonly ResearchCitationSourceIdentity[]; resumeFrom?: string; signal?: AbortSignal; onStreamDone?: (done: { finishReason?: string }) => void; onCitation?: (candidate: ResearchCitationCandidate) => void }): AsyncIterable<string>;
   /** #207 independent citation producer; acceptance remains owned by CitationAttributionModule. */
   attributeCitations?(assembly: Extract<ContextAssemblyResult, { status: "assembled" }>, input: { taskId: string }): Promise<CitationAttributionModelResult>;
   /** 最终写作：按当前任务与显式用户约束输出自由形态 Markdown，不返回 JSON 切片结构。 */
   writeBody?(request: AssembledResearchGenerationRequest): Promise<string>;
-  /** 真实模型逐字流式正文（方案 B）；缺省时退回 writeBody 原子写或 legacy generate 流式。onReasoning 旁路接收思考增量（ADR-0035）；signal 供暂停/停止中止物理流。 */
-  writeBodyStream?(request: AssembledResearchGenerationRequest & { resumeFrom?: string; onStreamDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; signal?: AbortSignal }): AsyncIterable<string>;
+  /** 真实模型逐字流式正文；缺省时退回 writeBody 原子写或 legacy generate 流式。 */
+  writeBodyStream?(request: AssembledResearchGenerationRequest & { resumeFrom?: string; onStreamDone?: (done: { finishReason?: string }) => void; signal?: AbortSignal }): AsyncIterable<string>;
   /** plan-then-write 第一阶段：为长文生成有序大纲。 */
   generateOutline?(request: AssembledResearchGenerationRequest): Promise<ResearchBodyOutline>;
   /** AnswerPlanningModule 的内部模型 Adapter；外部业务调用仍只有 module.plan(input)。 */
@@ -371,7 +344,9 @@ export interface ResearchServiceOptions {
 }
 
 export interface ResearchTurnOptions {
-  /** 本次请求是否允许联网搜索；缺省即关闭。 */
+  /** 本次请求联网模式；缺省继承节点提交时状态。 */
+  webSearchMode?: WebSearchMode;
+  /** @deprecated input compatibility alias. */
   allowWebSearch?: boolean;
   /** 用户在当前节点保存的思考偏好；任务仍会按实际路由归一化。 */
   thinkingEnabled?: boolean;
@@ -392,9 +367,7 @@ export class ResearchSessionService {
   private readonly finalBodySinks = new Map<string, FinalBodySink>();
   /** ADR-0035 暂停/停止：每个运行中任务的中止控制器；pause/stop 触发 abort 中止物理 provider 流。 */
   private readonly abortControllers = new Map<string, AbortController>();
-  /** 当前单轮流的 reasoning 串行持久化边界；暂停/停止必须先封口并冲洗，再写终态。 */
-  private readonly reasoningQueues = new Map<string, ReasoningPersistenceQueue>();
-  /** 用户操作已取得终态优先权但尚在冲洗 reasoning；防止完成事件越过暂停/停止边界。 */
+  /** 用户操作已取得终态优先权；防止完成事件越过暂停/停止边界。 */
   private readonly requestedInterrupts = new Map<string, "paused" | "stopped">();
 
   constructor(private readonly store: ResearchStore, private readonly options: ResearchServiceOptions = {}) {
@@ -415,7 +388,7 @@ export class ResearchSessionService {
     // 集中接线：所有落库插入研究事件的 store 方法都包一层发布"唤醒"信号（不再靠 100ms 轮询发现）。
     // DB 仍是恰好一次来源；这里只通知 SSE 端"有新事件，按游标重读"。
     const storeAny = store as unknown as Record<string, unknown>;
-    for (const method of ["appendResearchTaskDelta", "appendResearchTaskCitationCandidate", "completeResearchTask", "failResearchTask"] as const) {
+    for (const method of ["appendResearchTaskDelta", "appendResearchTaskExecutionEvent", "appendResearchTaskCitationCandidate", "completeResearchTask", "failResearchTask"] as const) {
       const original = storeAny[method] as ((...args: never[]) => Promise<unknown>) | undefined;
       if (typeof original !== "function") continue;
       storeAny[method] = async (...args: unknown[]) => {
@@ -428,9 +401,48 @@ export class ResearchSessionService {
     if (options.autoRunTasks !== false) this.scheduleRecovery();
   }
 
-  async resolveTaskRoute(deepResearch: boolean, requestedThinking: boolean): Promise<{ provider?: string; model?: string; thinkingEnabled: boolean }> {
+  async resolveTaskRoute(deepResearch: boolean, requestedThinking: boolean): Promise<{ provider?: string; model?: string; thinkingEnabled: boolean; modelIntent?: ResearchExecutionIntent["model"] }> {
     if (this.provider?.resolveTaskRoute) return this.provider.resolveTaskRoute(deepResearch, requestedThinking);
     return { provider: this.provider?.provider, model: this.provider?.model, thinkingEnabled: false };
+  }
+
+  /** Resolve every mutable execution control once, before the task is persisted. */
+  async resolveExecutionIntent(
+    taskMode: "chat" | "deep_research",
+    preferences: ComposerPreferences,
+    deepResearch?: ResearchExecutionIntent["deepResearch"],
+  ): Promise<ResearchExecutionIntent> {
+    const requestedThinking = preferences.thinkingEnabled;
+    const route = await this.resolveTaskRoute(taskMode === "deep_research", requestedThinking);
+    if (!route.provider || !route.model) {
+      throw new ResearchValidationError("指定用途的模型路由当前不可用，请在设置中修复后重试。", "model_route_unavailable");
+    }
+    if (requestedThinking && !route.thinkingEnabled) {
+      throw new ResearchValidationError("当前用途模型不支持已开启的深度思考。请关闭深度思考或选择明确支持的模型后再发送；草稿不会被清除。", "thinking_unavailable");
+    }
+    const searchPlan = resolveSearchExecutionPlan(getFrozenSearchConfig());
+    return {
+      schemaVersion: 1,
+      frozenAt: new Date().toISOString(),
+      taskMode,
+      ...(deepResearch ? { deepResearch: structuredClone(deepResearch) } : {}),
+      model: route.modelIntent ?? {
+        purpose: taskMode === "deep_research" ? "research" : "chat",
+        configurationSource: "injected_provider",
+        configurationVersion: 1,
+        provider: route.provider,
+        model: route.model,
+        apiMode: "openai_chat_completions",
+      },
+      webSearch: {
+        mode: preferences.webSearchMode ?? "off",
+        requestedBackend: searchPlan.requestedBackend,
+        fallbackPolicy: searchPlan.fallbackPolicy,
+        availableAtSubmission: searchPlan.available,
+        ...(searchPlan.unavailableReasonCode ? { unavailableReasonCode: searchPlan.unavailableReasonCode } : {}),
+      },
+      thinking: { requested: requestedThinking, applied: route.thinkingEnabled },
+    };
   }
 
   /** 发布"有事件"裸信号（不带载荷）；SSE 端收到后按游标重读，保证不丢、不重。 */
@@ -523,7 +535,7 @@ export class ResearchSessionService {
     // 会话视图只呈现根节点消息与主线任务；研究分支消息通过研究分支视图获取。
     const messages = this.store.listResearchMessages(id).filter((message) => message.nodeId === session.id);
     const messageIds = new Set(messages.map((message) => message.id));
-    const tasks = this.store.listResearchTasks(id).filter((task) => messageIds.has(task.inputMessageId));
+    const tasks = this.store.listResearchTasks(id).filter((task) => messageIds.has(task.inputMessageId)).map((task) => this.withExecutionEvents(task));
     const runIds = tasks.flatMap((task) => task.groundingScope?.runId ? [task.groundingScope.runId] : []);
     const citations = messages.length ? this.store.listResearchCitationsForMessages(messages.map((message) => message.id)) : [];
     const groundingSources = citedGroundingSources(
@@ -593,21 +605,21 @@ export class ResearchSessionService {
       id: randomUUID(), sessionId, role: "assistant", content: "", status: "pending", createdAt: now, updatedAt: now,
     };
     const rootNode = this.store.getResearchNode(session.id);
-    const currentPreferences = rootNode?.composerPreferences ?? DEFAULT_COMPOSER_PREFERENCES;
+    const currentPreferences = normalizeComposerPreferences(rootNode?.composerPreferences);
     const preferences: ComposerPreferences = {
-      allowWebSearch: options.allowWebSearch ?? currentPreferences.allowWebSearch,
+      webSearchMode: options.webSearchMode ?? (options.allowWebSearch === undefined ? currentPreferences.webSearchMode : options.allowWebSearch ? "required" : "off") ?? "off",
       thinkingEnabled: options.thinkingEnabled ?? currentPreferences.thinkingEnabled,
     };
-    const allowWebSearch = preferences.allowWebSearch;
-    const route = await this.resolveTaskRoute(false, preferences.thinkingEnabled);
+    const executionIntent = await this.resolveExecutionIntent("chat", preferences);
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId, inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
       idempotencyKey, status: "queued", retryable: false,
-      provider: route.provider, model: route.model,
+      provider: executionIntent.model.provider, model: executionIntent.model.model,
       promptVersion: this.provider?.promptVersion ?? PROMPT_VERSION,
-      allowWebSearch,
-      thinkingEnabled: route.thinkingEnabled,
-      ...(allowWebSearch ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
+      webSearchMode: executionIntent.webSearch.mode,
+      executionIntent,
+      thinkingEnabled: executionIntent.thinking.applied,
+      ...(executionIntent.webSearch.mode === "required" ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
       createdAt: now, updatedAt: now,
     };
     const accepted = rootNode
@@ -645,21 +657,21 @@ export class ResearchSessionService {
     const outputMessage: ResearchMessageRecord = {
       id: randomUUID(), sessionId: node.sessionId, nodeId: node.id, role: "assistant", content: "", status: "pending", createdAt: now, updatedAt: now,
     };
-    const currentPreferences = node.composerPreferences ?? DEFAULT_COMPOSER_PREFERENCES;
+    const currentPreferences = normalizeComposerPreferences(node.composerPreferences);
     const preferences: ComposerPreferences = {
-      allowWebSearch: options.allowWebSearch ?? currentPreferences.allowWebSearch,
+      webSearchMode: options.webSearchMode ?? (options.allowWebSearch === undefined ? currentPreferences.webSearchMode : options.allowWebSearch ? "required" : "off") ?? "off",
       thinkingEnabled: options.thinkingEnabled ?? currentPreferences.thinkingEnabled,
     };
-    const allowWebSearch = preferences.allowWebSearch;
-    const route = await this.resolveTaskRoute(false, preferences.thinkingEnabled);
+    const executionIntent = await this.resolveExecutionIntent("chat", preferences);
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId: node.sessionId, nodeId: node.id, inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
       idempotencyKey, status: "queued", retryable: false,
-      provider: route.provider, model: route.model,
+      provider: executionIntent.model.provider, model: executionIntent.model.model,
       promptVersion: this.provider?.promptVersion ?? PROMPT_VERSION,
-      allowWebSearch,
-      thinkingEnabled: route.thinkingEnabled,
-      ...(allowWebSearch ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
+      webSearchMode: executionIntent.webSearch.mode,
+      executionIntent,
+      thinkingEnabled: executionIntent.thinking.applied,
+      ...(executionIntent.webSearch.mode === "required" ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
       createdAt: now, updatedAt: now,
     };
     const accepted = await this.store.createResearchTurnForNode({
@@ -678,7 +690,15 @@ export class ResearchSessionService {
   getTask(id: string): ResearchTaskRecord {
     const task = this.store.getResearchTask(id);
     if (!task) throw new ResearchNotFoundError("Research task not found");
-    return task;
+    return this.withExecutionEvents(task);
+  }
+
+  withExecutionEvents(task: ResearchTaskRecord): ResearchTaskRecord {
+    return {
+      ...task,
+      executionEvents: this.store.listResearchTaskEvents(task.id)
+        .flatMap((event) => event.type === "execution" ? [event.execution] : []),
+    };
   }
 
   getTaskSnapshot(id: string): ResearchTaskEvent {
@@ -701,42 +721,32 @@ export class ResearchSessionService {
   async retryTask(id: string): Promise<ResearchTaskRecord> {
     const current = this.getTask(id);
     if (current.status !== "failed" || !current.retryable) throw new ResearchValidationError("Research task is not retryable");
-    // 保留式重试（#38）：plan-then-write 有已完成节、或单轮流式有非空断点时，保留部分正文与事件流，
-    // 让任务从断点续传而非清空重来。
-    const hasCompletedSection = (current.bodyPlan?.sections ?? []).some((section) => section.status === "completed");
-    const hasStreamCheckpoint = Boolean(current.streamCheckpoint?.content?.trim() || current.streamCheckpoint?.protocolPrefix);
-    // 联网证据路径每次执行都会重新取证；失败重试若保留旧正文/断点，就会把来源 A 的
-    // 半篇正文续到来源 B，并最终只保存 B 的来源。该路径必须把 retry 当成一次全新尝试。
-    const restartGroundedEvidence = current.allowWebSearch === true
-      && Boolean(this.provider?.prepareGrounded)
-      && (hasStreamCheckpoint || Boolean(this.store.getResearchMessageBody(current.outputMessageId)?.content.trim()));
-    const preserveContent = !restartGroundedEvidence && (hasCompletedSection || hasStreamCheckpoint);
-    const task = await this.store.retryResearchTask(current, current.provider, current.model, this.promptVersionForAttempt(current), { preserveContent });
+    const intent = await this.resolveExecutionIntentForNewAttempt(current);
+    const task = await this.store.retryResearchTask(current, intent.model.provider, intent.model.model, this.promptVersionForAttempt(current));
+    await this.store.saveResearchTaskExecutionIntent(task.id, intent);
     if (this.options.autoRunTasks !== false) this.scheduleTask(task.id);
-    return task;
+    return this.getTask(task.id);
   }
 
-  /** ADR-0035 暂停：封住 reasoning 边界并中止物理流，尾段落库完成后再置 paused。 */
+  /** 暂停当前物理流并保留可恢复断点。 */
   async pauseTask(id: string): Promise<ResearchTaskRecord> {
     const current = this.getTask(id);
     if (current.status !== "running") return this.store.pauseResearchTask(id);
     this.requestedInterrupts.set(id, "paused");
-    const pendingReasoning = this.reasoningQueues.get(id)?.close();
     this.abortControllers.get(id)?.abort();
     try {
-      if (pendingReasoning) await pendingReasoning;
       return await this.store.pauseResearchTask(id);
     } finally {
       if (this.requestedInterrupts.get(id) === "paused") this.requestedInterrupts.delete(id);
     }
   }
 
-  /** ADR-0035 继续：paused → queued 重新入队，从断点续写（正文/思考/断点全部保留）。 */
+  /** 继续：paused → queued 重新入队，从正文断点续写。 */
   async resumeTask(id: string): Promise<ResearchTaskRecord> {
     const current = this.getTask(id);
     // 仅证据路径的流式断点不能跨暂停复用：恢复时 prepareGrounded 会重新取证，
     // 所以必须以空正文/事件开始同一任务的新尝试，避免 A 的正文对应 B 的来源。
-    const restartGroundedEvidence = current.allowWebSearch === true
+    const restartGroundedEvidence = (current.executionIntent?.webSearch.mode ?? current.webSearchMode ?? (current.allowWebSearch ? "required" : "off")) === "required"
       && Boolean(this.provider?.prepareGrounded);
     const task = restartGroundedEvidence
       ? await this.store.restartPausedResearchTask(id)
@@ -745,15 +755,13 @@ export class ResearchSessionService {
     return task;
   }
 
-  /** ADR-0035 停止：封住 reasoning 边界并中止物理流，尾段落库后再写 stopped 终态事件。 */
+  /** 停止当前物理流并写入终态事件。 */
   async stopTask(id: string): Promise<ResearchTaskRecord> {
     const current = this.getTask(id);
     if (current.status !== "running") return this.store.stopResearchTask(id);
     this.requestedInterrupts.set(id, "stopped");
-    const pendingReasoning = this.reasoningQueues.get(id)?.close();
     this.abortControllers.get(id)?.abort();
     try {
-      if (pendingReasoning) await pendingReasoning;
       return await this.store.stopResearchTask(id);
     } finally {
       if (this.requestedInterrupts.get(id) === "stopped") this.requestedInterrupts.delete(id);
@@ -766,9 +774,11 @@ export class ResearchSessionService {
     if (current.status !== "completed" && current.status !== "stopped") {
       throw new ResearchValidationError("Research task is not regenerable");
     }
-    const task = await this.store.regenerateResearchTask(current, current.provider, current.model, this.promptVersionForAttempt(current));
+    const intent = await this.resolveExecutionIntentForNewAttempt(current);
+    const task = await this.store.regenerateResearchTask(current, intent.model.provider, intent.model.model, this.promptVersionForAttempt(current));
+    await this.store.saveResearchTaskExecutionIntent(task.id, intent);
     if (this.options.autoRunTasks !== false) this.scheduleTask(task.id);
-    return task;
+    return this.getTask(task.id);
   }
 
   /** ADR-0035 重新编辑：改写已发送的用户消息并重新生成——新回答直接替换旧回答（不保留旧版）。 */
@@ -778,9 +788,19 @@ export class ResearchSessionService {
     if (trimmed.length > 200_000) throw new ResearchValidationError("Message content must not exceed 200000 characters");
     const existing = this.store.getResearchTaskByInput(inputMessageId);
     const promptVersion = existing ? this.promptVersionForAttempt(existing) : PROMPT_VERSION;
-    const task = await this.store.editResearchMessage(inputMessageId, trimmed, this.provider?.provider, this.provider?.model, promptVersion);
+    if (!existing) throw new ResearchValidationError("Research task is not editable");
+    const intent = await this.resolveExecutionIntentForNewAttempt(existing);
+    const task = await this.store.editResearchMessage(inputMessageId, trimmed, intent.model.provider, intent.model.model, promptVersion);
+    await this.store.saveResearchTaskExecutionIntent(task.id, intent);
     if (this.options.autoRunTasks !== false) this.scheduleTask(task.id);
-    return task;
+    return this.getTask(task.id);
+  }
+
+  private async resolveExecutionIntentForNewAttempt(task: ResearchTaskRecord): Promise<ResearchExecutionIntent> {
+    const node = this.store.getResearchNode(task.nodeId ?? task.sessionId);
+    const preferences = normalizeComposerPreferences(node?.composerPreferences);
+    const taskMode = task.executionIntent?.taskMode ?? (task.executionIntent?.deepResearch ? "deep_research" : "chat");
+    return this.resolveExecutionIntent(taskMode, preferences, task.executionIntent?.deepResearch);
   }
 
   async resumeTasks(): Promise<number> {
@@ -803,7 +823,16 @@ export class ResearchSessionService {
       if (!current || current.status !== "queued") return;
       const session = this.store.getResearchSession(current.sessionId);
       if (!session) throw new Error("Research session not found");
-      const generation = this.buildGenerationRequest(current);
+      let generation: ReturnType<ResearchSessionService["buildGenerationRequest"]>;
+      try {
+        generation = this.buildGenerationRequest(current);
+      } catch (error) {
+        const failure = error instanceof TaskExecutionError
+          ? { code: error.code, message: error.message }
+          : { code: "provider_error" as const, message: "任务上下文无法装配。输入已保存，可以稍后重试。" };
+        await this.store.failResearchTask(current, failure);
+        return;
+      }
       const task = this.store.claimResearchTask(
         id, current.provider, current.model,
         this.promptVersionForAttempt(current),
@@ -820,6 +849,32 @@ export class ResearchSessionService {
         });
         return;
       }
+      if (task.executionIntent?.webSearch.mode === "required" && !task.executionIntent.webSearch.availableAtSubmission) {
+        await this.recordExecution(task.id, {
+          stage: "web_search",
+          status: "failed",
+          requestedBackend: task.executionIntent.webSearch.requestedBackend,
+          reasonCode: task.executionIntent.webSearch.unavailableReasonCode ?? "backend_unavailable",
+        });
+        await this.store.failResearchTask(task, {
+          code: "web_search_unavailable",
+          message: "提交时选定的联网搜索后端不可用，任务未调用模型，也未降级为离线回答。",
+        });
+        return;
+      }
+      if ((task.executionIntent?.webSearch.mode ?? task.webSearchMode) === "required" && !provider.prepareGrounded) {
+        await this.recordExecution(task.id, {
+          stage: "web_search",
+          status: "failed",
+          requestedBackend: task.executionIntent?.webSearch.requestedBackend,
+          reasonCode: "backend_unavailable",
+        });
+        await this.store.failResearchTask(task, {
+          code: "web_search_unavailable",
+          message: "当前执行路由没有可调用的搜索后端，任务未调用回答模型，也未降级为离线回答。",
+        });
+        return;
+      }
 
       const messages = generation.messages;
       const outputMessage = this.store.getResearchMessageBody(task.outputMessageId);
@@ -833,7 +888,8 @@ export class ResearchSessionService {
         outputMessageId: task.outputMessageId,
         conversationContext: generation.conversationContext,
         sliceOrdinalStart: this.sliceOrdinalStartFor(nodeId, task.outputMessageId),
-        allowWebSearch: task.allowWebSearch === true,
+        webSearchMode: task.executionIntent?.webSearch.mode ?? task.webSearchMode ?? (task.allowWebSearch ? "required" : "off"),
+        executionIntent: task.executionIntent,
         thinkingEnabled: task.thinkingEnabled === true,
         ...(generation.deepResearch ? { deepResearch: generation.deepResearch } : {}),
         ...(generation.parentChainContext ? { parentChainContext: generation.parentChainContext } : {}),
@@ -843,6 +899,7 @@ export class ResearchSessionService {
       this.finalBodySinks.set(task.id, new FinalBodySink(task.streamCheckpoint?.protocolPrefix));
       let generatedCharacters = 0;
       try {
+        await this.recordExecution(task.id, { stage: "planning", status: "started" });
         await this.store.saveResearchTaskConversationContextSnapshot(task.id, generation.conversationContext);
         const answerPlanning = await this.answerPlanner.plan({
           taskId: task.id,
@@ -855,15 +912,18 @@ export class ResearchSessionService {
           adoptedAdaptationCategories: [],
           capabilities: {
             structuredPlanning: provider.planAnswer ? "available" : "unavailable",
-            webSearch: task.allowWebSearch === true
+            webSearch: (task.executionIntent?.webSearch.mode ?? task.webSearchMode ?? (task.allowWebSearch ? "required" : "off")) === "required"
               ? "authorized"
               : provider.prepareGrounded ? "not_authorized" : "unavailable",
           },
           thinkingEnabled: task.thinkingEnabled === true,
           deepResearch: Boolean(generation.deepResearch),
+          executionIntent: task.executionIntent,
           existing: task.answerPlanSnapshot,
         });
         await this.store.saveResearchTaskAnswerPlanSnapshot(task.id, answerPlanning.plan);
+        await this.recordExecution(task.id, { stage: "planning", status: "completed" });
+        await this.recordExecution(task.id, { stage: "model_analysis", status: "started" });
         generationRequest.answerPlan = answerPlanning.plan;
         generationRequest.contextCandidates = [...generation.contextCandidates, answerPlanning.candidate];
         await this.ensureContextSourceSnapshot(task, generationRequest.contextCandidates);
@@ -874,10 +934,16 @@ export class ResearchSessionService {
         let citations: ResearchCitationRecord[] = [];
         let titleHints: ReadonlyMap<number, string> = new Map();
         let markupFinished = false;
-        if (generationRequest.allowWebSearch && provider.prepareGrounded) {
+        await this.recordExecution(task.id, { stage: "drafting", status: "started" });
+        if (generationRequest.webSearchMode === "required" && provider.prepareGrounded) {
           // 联网先准备可追溯证据；只有显式确认的最终通道才可直入正文，
           // 否则必须由独立最终写作阶段产出用户可见内容。
           try {
+            await this.recordExecution(task.id, {
+              stage: "web_search",
+              status: "started",
+              requestedBackend: task.executionIntent?.webSearch.requestedBackend,
+            });
             const grounded = await this.invokeWithBudgetReassembly(
               generationRequest,
               "research_grounding",
@@ -885,6 +951,41 @@ export class ResearchSessionService {
               [],
               (groundingRequest) => provider.prepareGrounded!({ ...groundingRequest, scenario }),
             );
+            const searchAudit = searchAuditFor(task, grounded);
+            await this.store.saveResearchTaskWebSearchAudit(task.id, searchAudit);
+            const actualBackend = searchAudit.attemptedBackends.at(-1);
+            for (const query of grounded.queries) {
+              await this.recordExecution(task.id, {
+                stage: "web_search",
+                status: searchAudit.failureClassification ? "failed" : "completed",
+                query,
+                requestedBackend: searchAudit.requestedBackend,
+                ...(actualBackend ? { actualBackend } : {}),
+                usedFallback: searchAudit.usedFallback,
+                resultCount: searchAudit.resultCount,
+                sourceCount: searchAudit.sourceCount,
+                ...(searchAudit.failureClassification ? { reasonCode: searchAudit.failureClassification } : {}),
+              });
+            }
+            await this.recordExecution(task.id, {
+              stage: "source_reading",
+              status: searchAudit.sourceCount > 0 ? "completed" : "failed",
+              requestedBackend: searchAudit.requestedBackend,
+              ...(actualBackend ? { actualBackend } : {}),
+              usedFallback: searchAudit.usedFallback,
+              resultCount: searchAudit.resultCount,
+              sourceCount: searchAudit.sourceCount,
+              ...(searchAudit.failureClassification ? { reasonCode: searchAudit.failureClassification } : {}),
+            });
+            if (searchAudit.failureClassification) {
+              // A backend call was genuinely attempted, but no qualified source survived. The
+              // runtime, rather than the model, owns the visible disclosure and its exact position.
+              if (searchAudit.attemptedBackends.length === 0) {
+                throw new TaskExecutionError("web_search_unavailable", "联网搜索未能实际调用提交时冻结的后端，任务未降级为离线回答。");
+              }
+              await this.saveGroundingStatus(task, scenario, "no_verifiable_sources", searchAudit.failureReason);
+              content = await this.writeBodyAfterSearchFailure(task, provider, generationRequest, searchAudit);
+            } else {
             if (grounded.evidenceBundle) {
               // Qualified packed evidence and its policy ledger enter the same audited admission
               // boundary as every other final-writer input. Required protection makes the source
@@ -922,12 +1023,13 @@ export class ResearchSessionService {
             const result = await this.groundingResultFor(task, correctedGrounding, scenario, provider);
             await this.store.saveResearchGroundingResult(result);
             citations = result.citations;
+            }
           } catch (error) {
             await this.saveGroundingStatus(task, scenario, "grounding_failed", groundingFailureRecordMessage(error));
             throw error;
           }
         } else {
-          if (generationRequest.allowWebSearch) await this.saveGroundingStatus(task, scenario, "grounding_unsupported");
+          if (generationRequest.webSearchMode === "required") await this.saveGroundingStatus(task, scenario, "grounding_unsupported");
           if (provider.writeBody) {
             // 生成自由化：按预期长度自动选择单轮自由写或 plan-then-write 逐节扩写。
             // 真实逐字流式（方案 B）只用于单轮自由写；plan-then-write 仍按节增量落正文。
@@ -961,13 +1063,22 @@ export class ResearchSessionService {
         }
         this.throwIfUserInterrupted(task.id);
         if (!markupFinished) content = (await this.finishGeneratedMarkup(task)).content;
+        await this.recordExecution(task.id, { stage: "model_analysis", status: "completed" });
+        await this.recordExecution(task.id, { stage: "drafting", status: "completed" });
         generatedCharacters = content.length;
         if (generatedCharacters > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
-        assertAnswerCompletion(answerPlanning.plan, { body: content, truncated: false });
+        try {
+          assertAnswerCompletion(answerPlanning.plan, { body: content, truncated: false });
+        } catch {
+          await this.recordExecution(task.id, { stage: "degradation", status: "failed", reasonCode: "user_intent_unsatisfied" });
+          throw new TaskExecutionError("user_intent_unsatisfied", "生成结果未满足用户明确的长度或格式约束，任务未标记完成。");
+        }
         // 正文定稿后统一派生正式切片（确定性边界 + 小模型事后标注），再落库与完成。
+        await this.recordExecution(task.id, { stage: "finalizing", status: "started" });
         await this.finalizeDerivedSlices(task, provider, nodeId, content, citations, titleHints);
         await this.persistCitationSidecars(task, citations);
         this.throwIfUserInterrupted(task.id);
+        await this.recordExecution(task.id, { stage: "finalizing", status: "completed" });
         await this.store.completeResearchTask(task.id);
         try {
           await this.options.onTaskCompleted?.(this.getTask(task.id));
@@ -986,15 +1097,24 @@ export class ResearchSessionService {
         // 失败时只冲洗弱标记控制串；FinalBodySink 中未确认的协议前缀必须留在安全断点，
         // 不能被 finish() 当普通正文释放到 SSE/持久化消息。
         this.finalBodySinks.get(task.id)?.abort();
+        const controlFailure = executionControlFailure(error);
+        if (controlFailure) {
+          await this.store.failResearchTask(this.getTask(task.id), {
+            code: controlFailure,
+            message: controlFailure === "thinking_unavailable"
+              ? "排队后模型能力发生变化，已冻结的深度思考意图无法执行；任务未静默关闭思考。"
+              : "提交时冻结的模型路由已不可用；任务未回退到活动模型。",
+          });
+          return;
+        }
         try { await this.finishGeneratedMarkup(task, true); } catch { /* 主错误仍由任务失败状态承载。 */ }
-        await this.store.failResearchTask(this.getTask(task.id), {
-          code: "provider_error",
-          message: "AI 生成的回答无效。输入已保存，可以稍后重试。",
-        });
+        const failure = error instanceof TaskExecutionError
+          ? { code: error.code, message: error.message }
+          : { code: "provider_error" as const, message: "AI 生成的回答无效。输入已保存，可以稍后重试。" };
+        await this.store.failResearchTask(this.getTask(task.id), failure);
       }
     } finally {
       this.abortControllers.delete(id);
-      this.reasoningQueues.delete(id);
       this.finalBodySinks.delete(id);
       this.running.delete(id);
     }
@@ -1028,6 +1148,44 @@ export class ResearchSessionService {
     await this.completeLegacyContent(task, provider, content, true);
   }
 
+  private async writeBodyAfterSearchFailure(
+    task: ResearchTaskRecord,
+    provider: ResearchGenerationProvider,
+    request: ResearchGenerationRequest,
+    audit: ResearchWebSearchAudit,
+  ): Promise<string> {
+    const notice = `${WEB_SEARCH_NO_SOURCE_NOTICE}\n\n原因：${audit.failureReason ?? publicSearchFailureReason(audit.failureClassification)}\n\n`;
+    await this.appendGeneratedDelta(task, notice);
+    await this.recordExecution(task.id, { stage: "degradation", status: "started", reasonCode: audit.failureClassification ?? "no_qualified_sources" });
+    let body = "";
+    if (provider.writeBody) {
+      body = await this.invokeWithBudgetReassembly(
+        request,
+        "research_body",
+        "body-after-search-failure",
+        [],
+        (assembled) => provider.writeBody!(assembled),
+      );
+      await this.appendGeneratedDelta(task, body);
+    } else {
+      const stream = this.streamWithBudgetReassembly(
+        request,
+        request.deepResearch ? "deep_research" : "research_chat",
+        "body-after-search-failure",
+        [],
+        (assembled) => provider.generate(assembled),
+      );
+      for await (const delta of stream) {
+        if (!delta) continue;
+        body += delta;
+        await this.appendGeneratedDelta(task, delta);
+      }
+    }
+    if (!body.trim()) throw new Error("Provider returned an empty body after search failure");
+    await this.recordExecution(task.id, { stage: "degradation", status: "completed", reasonCode: audit.failureClassification ?? "no_qualified_sources" });
+    return notice + body;
+  }
+
   /**
    * 旧式/流式路径的完成收尾。与主路径一致地在完成时派生正式切片落库——否则该路径
    * 生成的内容卡片不可见。标注仍由小模型事后抽取（未配置时降级空标题/空概念）。
@@ -1048,7 +1206,7 @@ export class ResearchSessionService {
   }
 
   /** 把已通过正文协议准入的增量直接落库；弱标记由独立任务稍后抽取。 */
-  private async appendGeneratedDelta(task: ResearchTaskRecord, rawDelta: string, reasoningDelta?: string): Promise<{ content: string; delta: string; acceptedRawDelta: string }> {
+  private async appendGeneratedDelta(task: ResearchTaskRecord, rawDelta: string): Promise<{ content: string; delta: string; acceptedRawDelta: string }> {
     const sink = this.finalBodySinks.get(task.id);
     if (!sink) throw new Error("Final body sink is not initialized");
     let acceptedDelta: string;
@@ -1061,8 +1219,8 @@ export class ResearchSessionService {
       }
       throw error;
     }
-    if (acceptedDelta || reasoningDelta) {
-      await this.store.appendResearchTaskDelta(task.id, acceptedDelta, reasoningDelta);
+    if (acceptedDelta) {
+      await this.store.appendResearchTaskDelta(task.id, acceptedDelta);
       if (acceptedDelta) this.options.onBodyUpdated?.(task);
     }
     const content = this.store.getResearchMessageBody(task.outputMessageId)?.content ?? "";
@@ -1237,8 +1395,7 @@ export class ResearchSessionService {
    * 并按 2s/2000 字节节流落 streamCheckpoint 作续传边界。流被切断→落断点后抛错（failResearchTask
    * 保留已写部分，可重试从断点续传）；finishReason==="length" 或无果断信号且非空且未超续写上限→
    * 续写循环再入（resumeFrom 续写）。完成后清断点。返回最终正文（由调用方派生切片/版本）。
-   * ADR-0035：思考增量经 onReasoning 旁路按 250ms/400 字节流落消息 reasoning 字段；
-   * 落库经同一 promise 链保序，正文增量必在待落思考之后追加。
+   * 供应商的 reasoning 通道不进入运行时事件、消息或持久化；这里只处理用户可见正文。
    */
   private async writeSingleTurnBodyStream(
     task: ResearchTaskRecord,
@@ -1257,11 +1414,6 @@ export class ResearchSessionService {
     let physicalCalls = 0;
     let lastCheckpointAt = 0;
     let checkpointedLength = seedLength;
-    // 思考增量缓冲与保序落库链：回调只推队列；正文 append 前先等全部先行 reasoning 落库。
-    const reasoning = new ReasoningPersistenceQueue(async (chunk) => {
-      await this.appendGeneratedDelta(task, "", chunk);
-    });
-    this.reasoningQueues.set(task.id, reasoning);
     for (;;) {
       let doneFinish: string | undefined;
       const resumeFrom = rawStreamed || undefined;
@@ -1301,7 +1453,6 @@ export class ResearchSessionService {
                 ...(resumeFrom ? { resumeFrom } : {}),
                 ...(this.abortControllers.get(task.id)?.signal ? { signal: this.abortControllers.get(task.id)!.signal } : {}),
                 onStreamDone: (done: { finishReason?: string }) => { doneFinish = done.finishReason; },
-                onReasoning: (text: string) => reasoning.push(text),
                 ...(groundedEvidence !== undefined ? {
                   onCitation: (candidate: ResearchCitationCandidate) => {
                     const normalized = this.normalizeCitationCandidate(candidate);
@@ -1325,8 +1476,6 @@ export class ResearchSessionService {
             const next = joinContinuation(rawStreamed, delta);
             const suffix = next.slice(rawStreamed.length);
             if (suffix) {
-              // 先落已缓冲的思考（保序），再落正文增量。
-              await reasoning.flush();
               const update = await this.appendGeneratedDelta(task, suffix);
               // 续写/去重只以已通过 FinalBodySink 的原始正文为种子。像 "<thi" 这样的
               // 协议前缀会留在 sink.pending，物理重试不能把它误当成可展示前缀再拼回来。
@@ -1355,13 +1504,11 @@ export class ResearchSessionService {
         }
         // 状态检查触发的退出（含 resume 竞态下任务被改写为 queued）：静默重抛，由 runTask 收尾。
         if (error instanceof TaskPausedByUserError) {
-          await reasoning.flush();
           throw error;
         }
         // ADR-0035：外部中止（暂停/停止触发）——无论任务状态已被改写为 paused/queued/stopped
         // （resume 竞态下状态先于旧循环退出被改写），都落断点并静默退出，绝不判失败。
         if (error instanceof ModelProviderAbortedError) {
-          await reasoning.flush();
           if (visibleStreamed.trim() || this.finalBodySinks.get(task.id)?.protocolPrefix()) {
             await this.store.saveResearchTaskStreamCheckpoint(task.id, visibleStreamed, this.finalBodySinks.get(task.id)?.protocolPrefix());
           }
@@ -1370,14 +1517,12 @@ export class ResearchSessionService {
         // ADR-0035：暂停/停止中止——先落已缓冲思考与断点，再以内部信号退出（runTask 静默收尾）。
         const status = this.store.getResearchTask(task.id)?.status;
         if (status === "paused" || status === "stopped") {
-          await reasoning.flush();
           if (visibleStreamed.trim() || this.finalBodySinks.get(task.id)?.protocolPrefix()) {
             await this.store.saveResearchTaskStreamCheckpoint(task.id, visibleStreamed, this.finalBodySinks.get(task.id)?.protocolPrefix());
           }
           throw new TaskPausedByUserError(status);
         }
         // 流被切断/重试耗尽：落断点保留已写部分后抛错（failResearchTask → 可重试从断点续传）。
-        await reasoning.flush();
         if (visibleStreamed.trim() || this.finalBodySinks.get(task.id)?.protocolPrefix()) {
           await this.store.saveResearchTaskStreamCheckpoint(task.id, visibleStreamed, this.finalBodySinks.get(task.id)?.protocolPrefix());
         }
@@ -1388,7 +1533,6 @@ export class ResearchSessionService {
       const truncated = doneFinish === "length";
       const noDecisiveSignal = !doneFinish;
       this.throwIfUserInterrupted(task.id);
-      await reasoning.flush();
       if (!visibleStreamed.trim()) throw new Error("Provider returned an empty body");
       if (!truncated && !noDecisiveSignal) break;
       continuations += 1;
@@ -1404,7 +1548,6 @@ export class ResearchSessionService {
       }
       if (truncated) console.warn(`[research] 单轮流式被截断触发续写 task=${task.id} chars=${visibleStreamed.length}`);
     }
-    await reasoning.close();
     await this.store.clearResearchTaskStreamCheckpoint(task.id);
     // seed 前缀已在库里，返回完整正文供 finalizeDerivedSlices 派生。
     return visibleStreamed;
@@ -1444,6 +1587,7 @@ export class ResearchSessionService {
         await this.store.saveResearchTaskBodyPlan(task.id, plan);
       } catch (error) {
         console.warn(`[research] 大纲生成失败，降级单轮 task=${task.id} errorKind=${providerErrorLogKind(error)}`);
+        await this.recordExecution(task.id, { stage: "degradation", status: "completed", reasonCode: "long_form_outline_unavailable_single_pass" });
         return undefined;
       }
     }
@@ -1643,6 +1787,7 @@ export class ResearchSessionService {
     priorAssembled = "",
   ): Promise<{ content: string } | { failed: string }> {
     const reducedTarget = Math.max(1, Math.floor(targetChars / 2));
+    await this.recordExecution(task.id, { stage: "degradation", status: "started", reasonCode: "long_form_section_reduced_target" });
     try {
       const result = await expand({
         ...(priorAssembled ? { continuation: { priorSectionContent: priorAssembled } } : {}),
@@ -1652,12 +1797,14 @@ export class ResearchSessionService {
       const chunk = result.content.trim();
       if (chunk) {
         const content = priorAssembled ? joinContinuation(priorAssembled, chunk) : chunk;
+        await this.recordExecution(task.id, { stage: "degradation", status: "completed", reasonCode: "long_form_section_reduced_target" });
         return { content };
       }
     } catch {
       // 降级再试也失败：落入下方节失败。
     }
     console.warn(`[research] 节最终失败 task=${task.id} reason=${reason} errorKind=${providerErrorLogKind(cause)}`);
+    await this.recordExecution(task.id, { stage: "degradation", status: "failed", reasonCode: "long_form_section_unsatisfied" });
     return { failed: reason };
   }
 
@@ -2145,7 +2292,26 @@ export class ResearchSessionService {
         ? all.filter((message) => message.branchId === output.branchId)
         : all.filter((message) => message.branchId === undefined);
     const history = thread.filter((message) => message.id !== task.outputMessageId);
-    const deepResearch = this.deepResearchContextFor(task, nodeId ?? output?.branchId, thread);
+    let deepResearch: DeepResearchContext | undefined;
+    const frozenDeepResearch = task.executionIntent?.deepResearch;
+    if (task.executionIntent?.taskMode === "deep_research") {
+      if (!frozenDeepResearch) {
+        throw new TaskExecutionError("deep_research_context_unavailable", "深入研究任务缺少提交时冻结的上下文。");
+      }
+      const selection = this.store.getResearchSelection(frozenDeepResearch.selectionId);
+      const sourceAvailable = selection?.anchor.kind === "message"
+        ? Boolean(this.store.getResearchMessageBody(selection.anchor.messageId))
+        : selection?.anchor.kind === "snapshot"
+          ? Boolean(this.store.getResearchContentSnapshot(selection.anchor.contentSnapshotId))
+          : false;
+      const fingerprint = createHash("sha256").update(JSON.stringify(frozenDeepResearch.context)).digest("hex");
+      if (!selection || !sourceAvailable || fingerprint !== frozenDeepResearch.contextFingerprint) {
+        throw new TaskExecutionError("deep_research_context_unavailable", "深入研究的来源上下文已不可用，任务不会降级为普通聊天。");
+      }
+      deepResearch = structuredClone(frozenDeepResearch.context);
+    } else {
+      deepResearch = this.deepResearchContextFor(task, nodeId ?? output?.branchId, thread);
+    }
     const contextNodeId = nodeId ?? output?.branchId ?? task.sessionId;
     const parentChain = this.parentChainContext.buildParentChainContext(contextNodeId);
     // 根节点及失效父链保持现有提示词，避免注入空的“父链上下文”占位。
@@ -2310,7 +2476,7 @@ export class ResearchSessionService {
   private async saveGroundingStatus(
     task: ResearchTaskRecord,
     scenario: ResearchGroundingScenario,
-    status: Extract<ResearchGroundingScopeStatus, "grounding_failed" | "grounding_unsupported">,
+    status: Extract<ResearchGroundingScopeStatus, "grounding_failed" | "grounding_unsupported" | "no_verifiable_sources">,
     errorMessage?: string,
   ): Promise<void> {
     const createdAt = new Date().toISOString();
@@ -2395,6 +2561,84 @@ export class ResearchSessionService {
   private scheduleTask(id: string): void {
     setImmediate(() => void this.processTask(id).catch(() => undefined));
   }
+
+  private async recordExecution(taskId: string, execution: ResearchExecutionEventRecord): Promise<void> {
+    await this.store.appendResearchTaskExecutionEvent(taskId, execution);
+  }
+}
+
+function executionControlFailure(error: unknown): "model_route_unavailable" | "thinking_unavailable" | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const code = (error as { code?: unknown }).code;
+  return code === "model_route_unavailable" || code === "thinking_unavailable" ? code : undefined;
+}
+
+function publicSearchFailureReason(classification: ResearchWebSearchAudit["failureClassification"]): string {
+  switch (classification) {
+    case "timeout": return "搜索后端调用超时。";
+    case "backend_error": return "搜索后端返回错误。";
+    case "zero_results": return "搜索完成，但没有返回结果。";
+    case "fetch_failed": return "搜索返回了结果，但来源正文读取失败。";
+    case "no_qualified_sources": return "搜索返回了结果，但没有来源通过可用性与证据检查。";
+    case "backend_unavailable": return "搜索调用未能到达已冻结的后端。";
+    default: return "搜索未能提供可用于外部核验的来源。";
+  }
+}
+
+function stringArrayField(record: Record<string, unknown> | undefined, field: string): string[] {
+  const value = record?.[field];
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+function numberField(record: Record<string, unknown> | undefined, field: string, fallback = 0): number {
+  const value = record?.[field];
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+function searchAuditFor(
+  task: ResearchTaskRecord,
+  grounded: ResearchGroundedPreparation,
+): ResearchWebSearchAudit {
+  const summary = grounded.responseSummary;
+  const attemptedBackends = stringArrayField(summary, "attemptedBackends");
+  const resultCount = numberField(summary, "resultCount");
+  const sourceCount = grounded.sources.filter((source) => source.evidenceStatus !== "none").length;
+  const queryCount = numberField(summary, "queryCount", grounded.queries.length);
+  const rawFailure = typeof summary?.searchFailureReason === "string" ? summary.searchFailureReason : undefined;
+  const explicitFailure = summary?.searchFailureClassification === "timeout" || summary?.searchFailureClassification === "backend_error"
+    ? summary.searchFailureClassification
+    : undefined;
+  const traceTimedOut = grounded.trace?.some((entry) => entry.errorCategory === "timeout") === true;
+  const traceFetchFailed = grounded.trace?.some((entry) => entry.stage === "fetch" && entry.status !== "completed") === true;
+  const failureClassification: ResearchWebSearchAudit["failureClassification"] = sourceCount > 0
+    ? undefined
+    : attemptedBackends.length === 0
+      ? "backend_unavailable"
+      : explicitFailure
+        ? explicitFailure
+      : traceTimedOut
+        ? "timeout"
+        : rawFailure
+          ? "backend_error"
+          : resultCount === 0
+            ? "zero_results"
+            : traceFetchFailed
+              ? "fetch_failed"
+              : "no_qualified_sources";
+  return {
+    requestedBackend: typeof summary?.requestedBackend === "string"
+      ? summary.requestedBackend
+      : task.executionIntent?.webSearch.requestedBackend ?? "unknown",
+    attemptedBackends,
+    usedFallback: summary?.usedFallback === true,
+    queryCount,
+    resultCount,
+    sourceCount,
+    ...(failureClassification ? {
+      failureClassification,
+      failureReason: publicSearchFailureReason(failureClassification),
+    } : {}),
+  };
 }
 
 /** 所有供应商可控文本在进入 SQLite 前再做一次递归脱敏与长度限制。 */
@@ -2421,7 +2665,16 @@ function sanitizeGroundingTrace(trace: readonly ResearchGroundingTraceEntry[]): 
 }
 
 export class ResearchNotFoundError extends Error {}
-export class ResearchValidationError extends Error {}
+export class ResearchValidationError extends Error {
+  constructor(message: string, readonly code: "invalid_request" | "model_route_unavailable" | "thinking_unavailable" = "invalid_request") {
+    super(message);
+  }
+
+}
+
+class TaskExecutionError extends Error {
+  constructor(readonly code: ResearchTaskError["code"], message: string) { super(message); }
+}
 /** 会话处于回收站时仍可读，但变更类请求（消息/导入/改名/移动/归档）一律拒绝。 */
 export class ResearchConflictError extends Error {}
 

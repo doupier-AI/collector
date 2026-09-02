@@ -83,8 +83,8 @@ test("v46 migrates current and historical inline reasoning into replay-safe inde
     [3, "当前思考"],
   ]);
   const view = migrated.getResearchMessage(output.id)!;
-  assert.equal(view.reasoning, "当前思考");
-  assert.deepEqual(view.versions?.map((version) => version.reasoning), ["较新旧思考", "最早思考"]);
+  assert.equal(view.reasoning, undefined, "普通读取隐藏旧推理");
+  assert.ok(view.versions?.every((version) => version.reasoning === undefined), "历史版本也隐藏旧推理");
   assert.equal(migrated.getResearchTask(task.id)?.generationAttempt, 3);
   assert.equal(migrated.getResearchTask(taskWithoutReasoning.id)?.generationAttempt, 1, "existing attempts without reasoning still keep their sequence");
   assert.equal(migrated.listResearchReasoningRecords(outputWithoutReasoning.id).length, 0);
@@ -110,7 +110,7 @@ test("v46 migrates current and historical inline reasoning into replay-safe inde
   replayed.close();
 });
 
-test("正文只读投影以字段白名单排除当前和历史 reasoning", async (t) => {
+test("新 reasoning 增量不落库，所有普通读取都排除当前和历史 reasoning", async (t) => {
   const { store } = await makeStore(t);
   const { output, task } = await seedTurn(store, "body-boundary");
   const sentinel = "RSN05_REASONING_SENTINEL_7f5c";
@@ -119,7 +119,8 @@ test("正文只读投影以字段白名单排除当前和历史 reasoning", asyn
   await store.appendResearchTaskDelta(task.id, "可公开正文", sentinel);
   await store.completeResearchTask(task.id);
 
-  assert.equal(store.getResearchMessage(output.id)?.reasoning, sentinel, "独立思考视图仍可读取哨兵");
+  assert.equal(store.getResearchMessage(output.id)?.reasoning, undefined);
+  assert.equal(store.listResearchReasoningRecords(output.id).length, 0, "新任务不得创建推理记录");
   for (const body of [
     store.getResearchMessageBody(output.id),
     store.listResearchMessageBodies("session-1").find((message) => message.id === output.id),
@@ -134,13 +135,13 @@ test("正文只读投影以字段白名单排除当前和历史 reasoning", asyn
   }
 
   await store.regenerateResearchTask(store.getResearchTask(task.id)!);
-  assert.equal(store.getResearchMessage(output.id)?.versions?.[0]?.reasoning, sentinel, "历史思考仍只在展示视图可回看");
+  assert.equal(store.getResearchMessage(output.id)?.versions?.[0]?.reasoning, undefined);
   const regeneratedBody = store.getResearchMessageBody(output.id)!;
   assert.equal(Object.hasOwn(regeneratedBody, "versions"), false);
   assert.doesNotMatch(JSON.stringify(regeneratedBody), new RegExp(sentinel));
 });
 
-test("reasoning lifecycle keeps continuations together and isolates retry, regenerate, and edit attempts", async (t) => {
+test("暂停、重试、重新生成和编辑都不会创建或恢复 reasoning", async (t) => {
   const { store, databasePath } = await makeStore(t);
   const { input, output, task } = await seedTurn(store);
 
@@ -154,24 +155,24 @@ test("reasoning lifecycle keeps continuations together and isolates retry, regen
   await store.completeResearchTask(task.id);
 
   let message = store.getResearchMessage(output.id)!;
-  assert.equal(message.reasoning, "思考一思考二");
-  assert.equal(store.listResearchReasoningRecords(output.id).length, 1, "pause/resume must continue one generation attempt");
+  assert.equal(message.reasoning, undefined);
+  assert.equal(store.listResearchReasoningRecords(output.id).length, 0);
   assert.equal(store.getResearchTask(task.id)?.generationAttempt, 1);
 
   await store.regenerateResearchTask(store.getResearchTask(task.id)!);
   assert.equal(store.getResearchTask(task.id)?.thinkingEnabled, true, "regenerate keeps the task-effective thinking value");
   message = store.getResearchMessage(output.id)!;
   assert.equal(message.reasoning, undefined);
-  assert.equal(message.versions?.[0]?.reasoning, "思考一思考二");
+  assert.equal(message.versions?.[0]?.reasoning, undefined);
   store.claimResearchTask(task.id);
   await store.appendResearchTaskDelta(task.id, "新正文", "新思考");
   await store.failResearchTask(store.getResearchTask(task.id)!, { code: "provider_error", message: "失败" });
-  assert.equal(store.listResearchReasoningRecords(output.id).length, 2);
+  assert.equal(store.listResearchReasoningRecords(output.id).length, 0);
 
   await store.retryResearchTask(store.getResearchTask(task.id)!);
   assert.equal(store.getResearchTask(task.id)?.thinkingEnabled, true, "retry keeps the task-effective thinking value");
   assert.equal(store.getResearchMessage(output.id)?.reasoning, undefined, "default retry must not reuse failed-attempt reasoning");
-  assert.equal(store.listResearchReasoningRecords(output.id).length, 1, "default retry deletes only the unversioned failed attempt");
+  assert.equal(store.listResearchReasoningRecords(output.id).length, 0);
   store.claimResearchTask(task.id);
   await store.appendResearchTaskDelta(task.id, "第三正文", "第三思考");
   await store.completeResearchTask(task.id);

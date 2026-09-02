@@ -35,7 +35,7 @@ describe("TurnSubmitter 幂等键", () => {
   });
 
   it("网络重试沿用首次会话选项", async () => {
-    const choices: Array<{ allowWebSearch: boolean; thinkingEnabled: boolean }> = [];
+    const choices: Array<{ webSearchMode?: "off" | "required"; thinkingEnabled: boolean }> = [];
     let calls = 0;
     const submitter = new TurnSubmitter({
       generateKey: () => "key-1",
@@ -47,13 +47,26 @@ describe("TurnSubmitter 幂等键", () => {
       },
     });
 
-    await expect(submitter.send("问题", { allowWebSearch: false, thinkingEnabled: true })).rejects.toThrow();
-    await expect(submitter.send("问题", { allowWebSearch: true, thinkingEnabled: false })).resolves.toBeDefined();
+    await expect(submitter.send("问题", { webSearchMode: "off", thinkingEnabled: true })).rejects.toThrow();
+    await expect(submitter.send("问题", { webSearchMode: "required", thinkingEnabled: false })).resolves.toBeDefined();
 
     expect(choices).toEqual([
-      { allowWebSearch: false, thinkingEnabled: true },
-      { allowWebSearch: false, thinkingEnabled: true },
+      { webSearchMode: "off", thinkingEnabled: true },
+      { webSearchMode: "off", thinkingEnabled: true },
     ]);
+  });
+
+  it("旧布尔输入只在请求边界映射为 required/off", async () => {
+    const choices: Array<{ webSearchMode?: "off" | "required" }> = [];
+    const submitter = new TurnSubmitter({
+      submit: async (_content, _key, options) => {
+        choices.push(options);
+        return makeTurn();
+      },
+    });
+
+    await submitter.send("兼容输入", { allowWebSearch: true });
+    expect(choices).toEqual([{ webSearchMode: "required", thinkingEnabled: false }]);
   });
 
   it("确认成功后，用户下一次明确发送生成新键", async () => {

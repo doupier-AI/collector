@@ -8,11 +8,13 @@ import {
   type AnswerPlanAssumption,
   type AnswerPlanConstraint,
   type AnswerPlanOperation,
+  type AnswerPresentationBlock,
   type AnswerTaskFamily,
   type BehaviorRuleContextCandidate,
   type ContextAssemblyResult,
   type ContextCandidate,
   type ConversationContext,
+  type ResearchExecutionIntent,
 } from "@collector/capture-contracts";
 import { assembleContext } from "./context-assembly.js";
 import { conversationContextCandidate } from "./conversation-context.js";
@@ -34,6 +36,7 @@ export interface AnswerPlanningInput {
   thinkingEnabled?: boolean;
   /** 深入研究任务使用 research 路由，其余任务使用 chat 路由。 */
   deepResearch?: boolean;
+  executionIntent?: ResearchExecutionIntent;
   existing?: AnswerPlan;
 }
 
@@ -45,7 +48,7 @@ export interface AnswerPlanningResult {
 export interface AnswerPlanningModelAdapter {
   plan(
     assembly: Extract<ContextAssemblyResult, { status: "assembled" }>,
-    context: { taskId: string; promptVersion: string; thinkingEnabled: boolean; deepResearch: boolean },
+    context: { taskId: string; promptVersion: string; thinkingEnabled: boolean; deepResearch: boolean; executionIntent?: ResearchExecutionIntent },
   ): Promise<string>;
 }
 
@@ -139,6 +142,7 @@ export class AnswerPlanningModule {
         promptVersion: this.plannerVersion,
         thinkingEnabled: input.thinkingEnabled === true,
         deepResearch: input.deepResearch === true,
+        ...(input.executionIntent ? { executionIntent: input.executionIntent } : {}),
       });
       const proposal = parseModelProposal(raw);
       if (!proposal) {
@@ -192,21 +196,23 @@ export class AnswerPlanningModule {
       ...(requestClarification ? ["request_clarification" as const] : []),
     ]);
     const format = formatConstraint(explicitConstraints);
+    const presentation = presentationFor(input.currentQuestion, taskFamily, explicitConstraints);
     const machineChecks = [
       { id: "body:not-empty", kind: "non_empty" as const, source: "product" as const },
       { id: "body:no-control-strings", kind: "forbidden_string" as const, expected: "internal_control_protocol", source: "product" as const },
       { id: "body:not-truncated", kind: "truncation" as const, source: "product" as const },
       ...(format ? [{ id: "body:explicit-format", kind: "format" as const, expected: format, source: "explicit_constraint" as const }] : []),
+      ...lengthMachineChecks(explicitConstraints),
     ];
     const semanticCriteria = semanticCriteriaFor(requiredOperations);
-    const authorization = needsCurrentFacts
-      ? input.capabilities.webSearch === "authorized" ? "authorized" as const
-        : input.capabilities.webSearch === "not_authorized" ? "not_authorized" as const
-          : "unavailable" as const
-      : "not_required" as const;
-    const mode = !needsCurrentFacts
-      ? "none" as const
-      : authorization === "authorized" ? "web_if_authorized" as const
+    // "authorized" means the frozen task mode is required. The planner may choose queries,
+    // but may never downgrade the obligation to execute at least one real backend call.
+    const authorization = input.capabilities.webSearch === "authorized" ? "authorized" as const
+      : needsCurrentFacts
+        ? input.capabilities.webSearch === "not_authorized" ? "not_authorized" as const : "unavailable" as const
+        : "not_required" as const;
+    const mode = authorization === "authorized" ? "web_if_authorized" as const
+      : !needsCurrentFacts ? "none" as const
         : authorization === "not_authorized" ? "clarify_authorization" as const
           : "available_context" as const;
     const uncertaintyReasons = [
@@ -235,6 +241,7 @@ export class AnswerPlanningModule {
               : factConflicts.length ? "preserve_ambiguity" : "proceed",
         reasons: uncertaintyReasons,
       },
+      presentation,
       completionContract: { machineChecks, semanticCriteria },
     };
   }
@@ -388,6 +395,35 @@ export class AnswerPlanningModule {
   }
 }
 
+function presentationFor(
+  question: string,
+  family: AnswerTaskFamily,
+  constraints: readonly AnswerPlanConstraint[],
+): { mode: "compact" | "structured"; preferredBlocks: readonly AnswerPresentationBlock[] } {
+  const explicit = formatConstraint(constraints);
+  if (explicit === "continuous_prose") return { mode: "compact", preferredBlocks: [] };
+  if (explicit === "table") return { mode: "structured", preferredBlocks: ["table"] };
+  if (explicit === "numbered_steps") return { mode: "structured", preferredBlocks: ["numbered_list"] };
+  if (explicit === "bullet_list") return { mode: "structured", preferredBlocks: ["bullet_list"] };
+
+  const structuredFamilies = new Set<AnswerTaskFamily>([
+    "comparison", "decision", "planning", "diagnosis", "research_synthesis", "mixed",
+  ]);
+  const longOrMultiStep = question.length > 240 || COMPLEX_PATTERN.test(question)
+    || /(?:长文|报告|多步骤|逐步|详细|全面|long-form|multi-step|detailed)/i.test(question);
+  const mode = structuredFamilies.has(family) || longOrMultiStep ? "structured" : "compact";
+  if (mode === "compact") return { mode, preferredBlocks: [] };
+
+  const blocks: AnswerPresentationBlock[] = ["heading"];
+  if (family === "planning") blocks.push("numbered_list");
+  else if (family === "comparison" || family === "decision") blocks.push("table");
+  else blocks.push("bullet_list");
+  if (/(?:代码|实现|脚本|函数|组件|\bAPI\b|\bSQL\b|\bcode\b|\bimplementation\b|\bscript\b)/i.test(question)) blocks.push("code");
+  if (/(?:流程|状态机|层级|时间线|关系图|flow|state machine|hierarchy|timeline)/i.test(question)) blocks.push("mermaid");
+  if (/(?:公式|方程|证明|math|equation)/i.test(question)) blocks.push("math");
+  return { mode, preferredBlocks: [...new Set(blocks)] };
+}
+
 function classifyTaskFamily(question: string): AnswerTaskFamily {
   const matches = FAMILY_PATTERNS.filter(({ pattern }) => pattern.test(question)).map(({ family }) => family);
   const unique = [...new Set(matches)];
@@ -402,7 +438,7 @@ function deriveExplicitConstraints(input: AnswerPlanningInput): AnswerPlanConstr
   const current = input.currentQuestion.trim();
   const currentFormat = FORMAT_PATTERNS.find(({ pattern }) => pattern.test(current));
   if (currentFormat) constraints.push({ kind: "format", value: currentFormat.expected, source: "current_turn", sourceMessageId: input.inputMessageId });
-  if (/(?:简短|精简|一句话|不超过\s*\d+|\d+\s*字|short|concise)/i.test(current)) constraints.push({ kind: "length", value: bounded(current, 240), source: "current_turn", sourceMessageId: input.inputMessageId });
+  if (/(?:简短|精简|一句话|不超过(?:写)?\s*\d+|至少(?:写)?\s*\d+|不少于(?:写)?\s*\d+|约(?:写)?\s*\d+|\d+\s*字|short|concise|at least\s+\d+|no more than\s+\d+|\d+\s*words?)/i.test(current)) constraints.push({ kind: "length", value: bounded(current, 240), source: "current_turn", sourceMessageId: input.inputMessageId });
   if (/(?:详细|详实|深入展开|long|detailed)/i.test(current)) constraints.push({ kind: "length", value: bounded(current, 240), source: "current_turn", sourceMessageId: input.inputMessageId });
   if (/(?:中文|英文|中英|英语|用\s*[A-Za-z]+\s*回答|in (?:Chinese|English))/i.test(current)) constraints.push({ kind: "language", value: bounded(current, 240), source: "current_turn", sourceMessageId: input.inputMessageId });
   if (/(?:语气|口吻|正式|轻松|专业|tone|formal|casual)/i.test(current)) constraints.push({ kind: "tone", value: bounded(current, 240), source: "current_turn", sourceMessageId: input.inputMessageId });
@@ -458,6 +494,22 @@ function formatConstraint(constraints: readonly AnswerPlanConstraint[]): string 
   if (!explicit) return undefined;
   if (["continuous_prose", "table", "numbered_steps", "bullet_list"].includes(explicit.value)) return explicit.value;
   return FORMAT_PATTERNS.find(({ pattern }) => pattern.test(explicit.value))?.expected;
+}
+
+function lengthMachineChecks(constraints: readonly AnswerPlanConstraint[]): AnswerPlan["completionContract"]["machineChecks"] {
+  const constraint = constraints.find((item) => item.kind === "length" && item.source !== "conversation_context")
+    ?? constraints.find((item) => item.kind === "length");
+  if (!constraint) return [];
+  const value = constraint.value;
+  const chineseMax = value.match(/不超过(?:写)?\s*(\d{1,7})\s*字/);
+  const chineseMin = value.match(/(?:至少|不少于)(?:写)?\s*(\d{1,7})\s*字/);
+  const englishMax = value.match(/no more than\s+(\d{1,7})\s+words?/i);
+  const englishMin = value.match(/at least\s+(\d{1,7})\s+words?/i);
+  if (chineseMax) return [{ id: "body:explicit-max-length", kind: "max_length", expected: `characters:${chineseMax[1]}`, source: "explicit_constraint" }];
+  if (chineseMin) return [{ id: "body:explicit-min-length", kind: "min_length", expected: `characters:${chineseMin[1]}`, source: "explicit_constraint" }];
+  if (englishMax) return [{ id: "body:explicit-max-length", kind: "max_length", expected: `words:${englishMax[1]}`, source: "explicit_constraint" }];
+  if (englishMin) return [{ id: "body:explicit-min-length", kind: "min_length", expected: `words:${englishMin[1]}`, source: "explicit_constraint" }];
+  return [];
 }
 
 function semanticCriteriaFor(operations: readonly AnswerPlanOperation[]): string[] {

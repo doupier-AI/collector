@@ -25,6 +25,29 @@ test("simple clear tasks are planned deterministically without a model call", as
   assert.deepEqual(result.plan.requiredOperations, ["explain"]);
   assert.equal(result.candidate.ruleKind, "answer_plan");
   assert.equal(result.candidate.priority, "low_weight");
+  assert.deepEqual(result.plan.presentation, { mode: "compact", preferredBlocks: [] });
+});
+
+test("自适应版式为比较与规划选择结构，但用户显式格式始终优先", async () => {
+  const planner = new AnswerPlanningModule({ buildFingerprint: "build:test" });
+  const comparison = (await planner.plan(inputFor("比较 PostgreSQL 和 MySQL"))).plan;
+  const planning = (await planner.plan(inputFor("规划数据迁移步骤", "task-layout-plan"))).plan;
+  const prose = (await planner.plan(inputFor("请用连续正文比较 PostgreSQL 和 MySQL，不要标题", "task-layout-prose"))).plan;
+  assert.deepEqual(comparison.presentation, { mode: "structured", preferredBlocks: ["heading", "table"] });
+  assert.deepEqual(planning.presentation, { mode: "structured", preferredBlocks: ["heading", "numbered_list"] });
+  assert.deepEqual(prose.presentation, { mode: "compact", preferredBlocks: [] });
+});
+
+test("required 联网不允许规划器降级为 not_required", async () => {
+  const planner = new AnswerPlanningModule({ buildFingerprint: "build:test" });
+  const plan = (await planner.plan(inputFor(
+    "说一句你好",
+    "task-required-search",
+    undefined,
+    { structuredPlanning: "unavailable", webSearch: "authorized" },
+  ))).plan;
+  assert.equal(plan.evidencePolicy.access, "authorized");
+  assert.equal(plan.evidencePolicy.mode, "web_if_authorized");
 });
 
 test("task family changes with the operation while domain replacement preserves the public plan shape", async () => {
@@ -257,6 +280,17 @@ test("machine checks stay deterministic and semantic criteria are not runtime ve
     body: "方案 | 特点\n--- | ---\nA | 更快",
   }));
   assert.ok(plan.completionContract.semanticCriteria.length > 0);
+});
+
+test("明确字数上下限进入机器完成契约，未满足时不能标记完成", async () => {
+  const planner = new AnswerPlanningModule({ buildFingerprint: "build:test" });
+  const minPlan = (await planner.plan(inputFor("请至少写 10 字", "task-min-length"))).plan;
+  const maxPlan = (await planner.plan(inputFor("请不超过 5 字", "task-max-length"))).plan;
+
+  assert.throws(() => assertAnswerCompletion(minPlan, { body: "太短" }), /body:explicit-min-length/);
+  assert.doesNotThrow(() => assertAnswerCompletion(minPlan, { body: "这是一段足够长的回答内容" }));
+  assert.throws(() => assertAnswerCompletion(maxPlan, { body: "这段回答明显太长" }), /body:explicit-max-length/);
+  assert.doesNotThrow(() => assertAnswerCompletion(maxPlan, { body: "刚好五字" }));
 });
 
 function inputFor(

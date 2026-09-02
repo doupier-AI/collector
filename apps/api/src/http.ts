@@ -6,7 +6,7 @@ import { timingSafeEqual } from "node:crypto";
 const RESEARCH_SSE_REDRAIN_MS = 100;
 import { ValidationError, NotFoundError, CaptureService } from "./service.js";
 import { LocalAuth, PairingRateLimitError } from "./auth.js";
-import { RESEARCH_IMPORT_MAX_BYTES, validateComposerPreferences, validateCreateChildNodeInput, validateDeepResearchInput, validateProjectInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSearchInput, validateResearchSelectionInput, validateResearchSessionInput, validateResearchSessionUpdateInput, validateResearchTermPreviewGrowthInput, validateResearchTermPreviewInput, validateSemanticSearchCommand } from "@collector/capture-contracts";
+import { RESEARCH_IMPORT_MAX_BYTES, normalizeComposerPreferences, normalizeWebSearchModeInput, validateComposerPreferences, validateCreateChildNodeInput, validateDeepResearchInput, validateProjectInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSearchInput, validateResearchSelectionInput, validateResearchSessionInput, validateResearchSessionUpdateInput, validateResearchTermPreviewGrowthInput, validateResearchTermPreviewInput, validateSemanticSearchCommand } from "@collector/capture-contracts";
 import { ResearchNotFoundError, ResearchValidationError, ResearchConflictError } from "./research.js";
 import { ResearchImportConflictError, ResearchImportNotFoundError, ResearchImportValidationError } from "./research-import.js";
 import { ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionValidationError } from "./selection.js";
@@ -316,7 +316,7 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         const accepted = await service.research.submitMessage(
           decodeURIComponent(researchMessagesMatch[1]), body.content, header(request, "idempotency-key") ?? "",
           {
-            ...(body.allowWebSearch !== undefined ? { allowWebSearch: body.allowWebSearch } : {}),
+            webSearchMode: normalizeWebSearchModeInput(body),
             ...(body.thinkingEnabled !== undefined ? { thinkingEnabled: body.thinkingEnabled } : {}),
           },
         );
@@ -560,7 +560,7 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         const accepted = await service.deepResearch.submitBranchMessage(
           decodeURIComponent(researchBranchMessagesMatch[1]), body.content, header(request, "idempotency-key") ?? "",
           {
-            ...(body.allowWebSearch !== undefined ? { allowWebSearch: body.allowWebSearch } : {}),
+            webSearchMode: normalizeWebSearchModeInput(body),
             ...(body.thinkingEnabled !== undefined ? { thinkingEnabled: body.thinkingEnabled } : {}),
           },
         );
@@ -588,7 +588,7 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         const accepted = await service.research.submitMessageToNode(
           decodeURIComponent(researchNodeMessagesMatch[1]), body.content, header(request, "idempotency-key") ?? "",
           {
-            ...(body.allowWebSearch !== undefined ? { allowWebSearch: body.allowWebSearch } : {}),
+            webSearchMode: normalizeWebSearchModeInput(body),
             ...(body.thinkingEnabled !== undefined ? { thinkingEnabled: body.thinkingEnabled } : {}),
           },
         );
@@ -637,7 +637,7 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         try { validateComposerPreferences(body); }
         catch (error) { throw new ResearchValidationError((error as Error).message); }
         return json(response, 200, await service.updateResearchNodeComposerPreferences(
-          decodeURIComponent(researchNodePreferencesMatch[1]), body,
+          decodeURIComponent(researchNodePreferencesMatch[1]), normalizeComposerPreferences(body),
         ));
       }
       const researchBodyVersionMatch = url.pathname.match(/^\/v1\/research-body-versions\/([^/]+)$/);
@@ -725,7 +725,9 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         return json(response, 409, { error: { code, message: error.message } });
       }
       if (error instanceof ValidationError || error instanceof TemporaryFusionConfirmationValidationError || error instanceof TemporaryFusionDraftValidationError || error instanceof TemporaryFusionConversationValidationError || error instanceof ResearchValidationError || error instanceof ResearchImportValidationError || error instanceof ResearchSelectionValidationError || error instanceof DeepResearchValidationError || error instanceof ResearchLaterValidationError || error instanceof ResearchTermPreviewValidationError || error instanceof ResearchFusionProposalValidationError || error instanceof RunRecordsValidationError || error instanceof SyntaxError) {
-        const code = error instanceof ResearchImportValidationError ? error.code : "invalid_request";
+        const code = error instanceof ResearchImportValidationError ? error.code
+          : error instanceof ResearchValidationError ? error.code
+            : "invalid_request";
         const status = code === "file_too_large" ? 413 : code === "unsupported_file_type" ? 415 : code === "invalid_file_content" ? 422 : 400;
         return json(response, status, { error: { code, message: error.message } });
       }

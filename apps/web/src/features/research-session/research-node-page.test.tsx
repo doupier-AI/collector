@@ -84,7 +84,7 @@ describe("ResearchNodePage 会话输入偏好", () => {
   it("保存失败时回滚乐观更新并显示行内错误", async () => {
     const user = userEvent.setup();
     const view = readyRootView();
-    view.node.composerPreferences = { allowWebSearch: false, thinkingEnabled: false };
+    view.node.composerPreferences = { webSearchMode: "off", thinkingEnabled: false };
     const updateResearchNodeComposerPreferences = vi.fn<ApiClient["updateResearchNodeComposerPreferences"]>()
       .mockRejectedValue(new NetworkError());
     renderNodePage({
@@ -92,13 +92,13 @@ describe("ResearchNodePage 会话输入偏好", () => {
       updateResearchNodeComposerPreferences,
     });
 
-    const toggle = await screen.findByRole("button", { name: "开启联网搜索" });
+    const toggle = await screen.findByRole("button", { name: "开启必须联网" });
     await user.click(toggle);
     expect(updateResearchNodeComposerPreferences).toHaveBeenCalledWith("session-1", {
-      allowWebSearch: true,
+      webSearchMode: "required",
       thinkingEnabled: false,
     });
-    await waitFor(() => expect(screen.getByRole("button", { name: "开启联网搜索" })).toHaveAttribute("aria-pressed", "false"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "开启必须联网" })).toHaveAttribute("aria-pressed", "false"));
     expect(screen.getByText("偏好没有保存，已恢复原设置。请重试。")).toBeInTheDocument();
   });
 });

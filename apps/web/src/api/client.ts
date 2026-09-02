@@ -406,7 +406,7 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         {
           method: "POST",
           headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
-          body: JSON.stringify({ content, allowWebSearch: options.allowWebSearch === true, thinkingEnabled: options.thinkingEnabled === true }),
+          body: JSON.stringify({ content, webSearchMode: options.webSearchMode ?? "off", thinkingEnabled: options.thinkingEnabled === true }),
         },
       );
     },
@@ -522,7 +522,7 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         {
           method: "POST",
           headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
-          body: JSON.stringify({ content, allowWebSearch: options.allowWebSearch === true, thinkingEnabled: options.thinkingEnabled === true }),
+          body: JSON.stringify({ content, webSearchMode: options.webSearchMode ?? "off", thinkingEnabled: options.thinkingEnabled === true }),
         },
       );
     },
@@ -753,7 +753,7 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         {
           method: "POST",
           headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
-          body: JSON.stringify({ content, allowWebSearch: options.allowWebSearch === true, thinkingEnabled: options.thinkingEnabled === true }),
+          body: JSON.stringify({ content, webSearchMode: options.webSearchMode ?? "off", thinkingEnabled: options.thinkingEnabled === true }),
         },
       );
     },
