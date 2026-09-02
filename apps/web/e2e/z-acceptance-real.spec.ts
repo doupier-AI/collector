@@ -1141,9 +1141,9 @@ test("弱标记场景八：联网回答的引用锚点与弱标记一致落位",
   test.setTimeout(1_200_000);
   const consoleIssues = watchConsole(page);
   await pairAndOpen(page, "/research/new");
-  const toggle = page.getByRole("checkbox", { name: "允许联网搜索" });
-  await expect(toggle).not.toBeChecked();
-  await toggle.check();
+  const toggle = page.getByRole("button", { name: "开启联网搜索" });
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await toggle.click();
   const sessionId = await submitQuestion(page, "请介绍 2026 年冬奥会的举办城市、开幕时间和新增比赛项目。");
   const rootNodeId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? sessionId;
   await waitCompletedAnswerText(page, 1);

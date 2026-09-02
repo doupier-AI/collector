@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ResearchNodeView, ResearchTaskEvent, ResearchTaskRecord } from "@collector/capture-contracts";
+import { DEFAULT_COMPOSER_PREFERENCES, type ComposerPreferences, type ResearchNodeView, type ResearchTaskEvent, type ResearchTaskRecord } from "@collector/capture-contracts";
 import { isUnauthorized } from "../../api/errors";
 import type { TaskEventStream } from "../../api/task-events";
 import { useServices } from "../../app/services";
@@ -13,7 +13,7 @@ import { upsertMessage, upsertTask } from "./session-view";
 export interface PendingFirstTurn {
   content: string;
   idempotencyKey: string;
-  allowWebSearch: boolean;
+  options: ComposerPreferences;
 }
 
 export type NodeState =
@@ -29,9 +29,11 @@ export interface ResearchNodeController {
   /** 通过 aria-live 播报的状态变化，不逐段朗读流式文字。 */
   liveMessage: string;
   actionError: string | null;
+  composerPreferenceError: string | null;
   reload(): void;
   /** 提交一条消息；返回 true 表示后端已确认保存（202）。 */
-  submit(content: string, allowWebSearch?: boolean): Promise<boolean>;
+  submit(content: string, options: ComposerPreferences): Promise<boolean>;
+  updateComposerPreferences(preferences: ComposerPreferences): Promise<void>;
   retryTask(task: ResearchTaskRecord): Promise<void>;
   /** ADR-0035：暂停生成（保留已写内容）、从断点继续、停止（终态保留已写内容）。 */
   pauseTask(task: ResearchTaskRecord): Promise<void>;
@@ -63,6 +65,7 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
   const [streamNotice, setStreamNotice] = useState<StreamNotice>("idle");
   const [liveMessage, setLiveMessage] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+  const [composerPreferenceError, setComposerPreferenceError] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
 
   const generationRef = useRef(0);
@@ -73,11 +76,12 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
   const initialTurnRef = useRef<PendingFirstTurn | undefined>(options?.initialTurn);
   const submitterRef = useRef<TurnSubmitter | null>(null);
   const submitterNodeRef = useRef<string | null>(null);
+  const preferenceGenerationRef = useRef(0);
 
   if (submitterNodeRef.current !== nodeId) {
     submitterNodeRef.current = nodeId;
     submitterRef.current = new TurnSubmitter({
-      submit: (content, key, allowWebSearch) => api.submitResearchNodeMessage(nodeId, content, key, { allowWebSearch }),
+      submit: (content, key, composerOptions) => api.submitResearchNodeMessage(nodeId, content, key, composerOptions),
     });
   }
 
@@ -136,7 +140,7 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
         try {
           await submitterRef.current!.send(initialTurn.content, {
             idempotencyKey: initialTurn.idempotencyKey,
-            allowWebSearch: initialTurn.allowWebSearch,
+            ...initialTurn.options,
           });
           if (isStale()) return;
           initialTurnRef.current = undefined;
@@ -276,11 +280,11 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
   }, []);
 
   const submit = useCallback(
-    async (content: string, allowWebSearch = false): Promise<boolean> => {
+    async (content: string, composerOptions: ComposerPreferences): Promise<boolean> => {
       const submitter = submitterRef.current;
       if (!submitter) return false;
       try {
-        const turn = await submitter.send(content, { allowWebSearch });
+        const turn = await submitter.send(content, composerOptions);
         setState((previous) =>
           previous.kind === "ready" ? { kind: "ready", view: mergeNodeTurn(previous.view, turn) } : previous,
         );
@@ -297,6 +301,34 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
     },
     [closeAllStreams],
   );
+
+  const updateComposerPreferences = useCallback(async (next: ComposerPreferences): Promise<void> => {
+    const generation = ++preferenceGenerationRef.current;
+    let previous = { ...DEFAULT_COMPOSER_PREFERENCES };
+    setComposerPreferenceError(null);
+    setState((current) => {
+      if (current.kind !== "ready") return current;
+      previous = current.view.node.composerPreferences ?? { ...DEFAULT_COMPOSER_PREFERENCES };
+      return { kind: "ready", view: { ...current.view, node: { ...current.view.node, composerPreferences: next } } };
+    });
+    try {
+      const node = await api.updateResearchNodeComposerPreferences(nodeId, next);
+      if (preferenceGenerationRef.current !== generation) return;
+      setState((current) => current.kind === "ready"
+        ? { kind: "ready", view: { ...current.view, node } }
+        : current);
+    } catch (error) {
+      if (preferenceGenerationRef.current !== generation) return;
+      setState((current) => current.kind === "ready"
+        ? { kind: "ready", view: { ...current.view, node: { ...current.view.node, composerPreferences: previous } } }
+        : current);
+      setComposerPreferenceError("偏好没有保存，已恢复原设置。请重试。");
+      if (isUnauthorized(error)) {
+        closeAllStreams();
+        setState({ kind: "error", error });
+      }
+    }
+  }, [api, closeAllStreams, nodeId]);
 
   const retryTask = useCallback(
     async (task: ResearchTaskRecord): Promise<void> => {
@@ -461,5 +493,5 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
     [closeAllStreams],
   );
 
-  return { state, streamNotice, liveMessage, actionError, reload, submit, retryTask, pauseTask, resumeTask, stopTask, regenerateTask, editMessage, updateView, announce, escalateError };
+  return { state, streamNotice, liveMessage, actionError, composerPreferenceError, reload, submit, updateComposerPreferences, retryTask, pauseTask, resumeTask, stopTask, regenerateTask, editMessage, updateView, announce, escalateError };
 }

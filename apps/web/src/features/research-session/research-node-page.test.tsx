@@ -80,6 +80,29 @@ function readyRootView(): ResearchNodeView {
   });
 }
 
+describe("ResearchNodePage 会话输入偏好", () => {
+  it("保存失败时回滚乐观更新并显示行内错误", async () => {
+    const user = userEvent.setup();
+    const view = readyRootView();
+    view.node.composerPreferences = { allowWebSearch: false, thinkingEnabled: false };
+    const updateResearchNodeComposerPreferences = vi.fn<ApiClient["updateResearchNodeComposerPreferences"]>()
+      .mockRejectedValue(new NetworkError());
+    renderNodePage({
+      getResearchNodeView: async () => view,
+      updateResearchNodeComposerPreferences,
+    });
+
+    const toggle = await screen.findByRole("button", { name: "开启联网搜索" });
+    await user.click(toggle);
+    expect(updateResearchNodeComposerPreferences).toHaveBeenCalledWith("session-1", {
+      allowWebSearch: true,
+      thinkingEnabled: false,
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "开启联网搜索" })).toHaveAttribute("aria-pressed", "false"));
+    expect(screen.getByText("偏好没有保存，已恢复原设置。请重试。")).toBeInTheDocument();
+  });
+});
+
 describe("ResearchNodePage 关联候选主动提示", () => {
   it("突出服务端价值排序后的第一条，而不是最新创建的一条", async () => {
     const highestValue = makeAssociationHint({ id: "hint-high", reason: "这条高价值对比直接纠正当前认识。", createdAt: "2026-08-20T00:00:00.000Z" });

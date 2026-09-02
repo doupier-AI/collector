@@ -36,6 +36,8 @@ test("creates formal versioned tables", async (t) => {
   assert.ok(sessionIndexes.some((index) => index.name === "research_sessions_creation_idempotency_idx" && index.unique === 1));
   const selectionColumns = (database.prepare("PRAGMA table_info(research_selections)").all() as Array<{ name: string }>).map((column) => column.name);
   assert.ok(selectionColumns.includes("idempotency_key"));
+  const nodeColumns = (database.prepare("PRAGMA table_info(research_nodes)").all() as Array<{ name: string }>).map((column) => column.name);
+  assert.equal(nodeColumns.includes("composer_preferences"), false, "节点偏好保存在既有 record_json，不新增 SQLite 列");
   database.close();
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 });

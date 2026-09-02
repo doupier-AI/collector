@@ -30,6 +30,10 @@ export interface AnswerPlanningInput {
     structuredPlanning: "available" | "unavailable";
     webSearch: "authorized" | "not_authorized" | "unavailable";
   };
+  /** 本任务入队时已经按实际路由归一化的思考有效值。 */
+  thinkingEnabled?: boolean;
+  /** 深入研究任务使用 research 路由，其余任务使用 chat 路由。 */
+  deepResearch?: boolean;
   existing?: AnswerPlan;
 }
 
@@ -41,7 +45,7 @@ export interface AnswerPlanningResult {
 export interface AnswerPlanningModelAdapter {
   plan(
     assembly: Extract<ContextAssemblyResult, { status: "assembled" }>,
-    context: { taskId: string; promptVersion: string },
+    context: { taskId: string; promptVersion: string; thinkingEnabled: boolean; deepResearch: boolean },
   ): Promise<string>;
 }
 
@@ -130,7 +134,12 @@ export class AnswerPlanningModule {
     try {
       const assembly = this.assembleModelInput(input);
       if (assembly.status !== "assembled") throw new Error(`Answer planning context rejected: ${assembly.reason}`);
-      const raw = await this.model.plan(assembly, { taskId: input.taskId, promptVersion: this.plannerVersion });
+      const raw = await this.model.plan(assembly, {
+        taskId: input.taskId,
+        promptVersion: this.plannerVersion,
+        thinkingEnabled: input.thinkingEnabled === true,
+        deepResearch: input.deepResearch === true,
+      });
       const proposal = parseModelProposal(raw);
       if (!proposal) {
         return this.result(this.finish(input, {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { deriveMessageBlocks, hashBodyContent, type ResearchAssociationHintRecord, type ResearchSelectionAnchor, type ResearchSessionView, type ResearchTaskRecord } from "@collector/capture-contracts";
+import { deriveMessageBlocks, hashBodyContent, type ComposerPreferences, type ResearchAssociationHintRecord, type ResearchSelectionAnchor, type ResearchSessionView, type ResearchTaskRecord } from "@collector/capture-contracts";
 import { isApiErrorCode, isUnauthorized, apiErrorCopy } from "../../api/errors";
 import { stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
@@ -714,14 +714,14 @@ export function ResearchNodePage() {
    * "深入研究这段"：以引用选区为来源创建子节点。
    * 选区文本自动进入子节点第一轮上下文（由后端 NodeGrowthService 处理）。
    */
-  async function handleStartChildNode(query: string, allowWebSearch = false): Promise<boolean> {
+  async function handleStartChildNode(query: string, options: ComposerPreferences): Promise<boolean> {
     if (!citedSelection) return false;
     try {
       const trimmed = query.trim();
       const idempotencyKey = childNodeIdempotencyKey(citedSelection.selectionId, trimmed, selectionExactDigest);
       const accepted = await api.startChildNode(
         citedSelection.selectionId,
-        { ...(trimmed ? { query: trimmed } : {}), allowWebSearch },
+        { ...(trimmed ? { query: trimmed } : {}), ...options },
         idempotencyKey,
       );
       removeCitation();
@@ -1179,6 +1179,9 @@ export function ResearchNodePage() {
         onImportFile={isRoot ? (file) => void imports.upload(file) : undefined}
         importAccept={isRoot ? IMPORT_ACCEPT : undefined}
         externalError={isRoot ? imports.uploadError : null}
+        preferenceError={node.composerPreferenceError}
+        preferences={view.node.composerPreferences}
+        onPreferencesChange={node.updateComposerPreferences}
         citedSelection={citedSelection}
         onRemoveCitation={removeCitation}
         onStartChildNode={handleStartChildNode}

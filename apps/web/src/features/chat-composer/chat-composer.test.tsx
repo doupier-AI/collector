@@ -2,11 +2,36 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import type { ReactNode } from "react";
+import type { AiConfigurationView, ComposerPreferences } from "@collector/capture-contracts";
+import type { ApiClient } from "../../api/client";
+import { ServicesProvider, type AppServices } from "../../app/services";
 import { ChatComposer } from "./ChatComposer";
 import { loadDraft } from "./draft";
+import { notifyAiConfigurationChanged } from "../research-session/ai-configuration-events";
 
-function renderComposer(onSubmit: (content: string) => Promise<boolean>, scope = "test-scope") {
-  render(<ChatComposer draftScope={scope} submitLabel="发送" onSubmit={onSubmit} />);
+const supportedConfig: AiConfigurationView = {
+  consent: true,
+  configured: true,
+  mode: "real",
+  provider: "deepseek",
+  model: "deepseek-chat",
+  providerProfileId: "profile-1",
+  routes: {
+    chat: { provider: "deepseek", model: "deepseek-chat", providerProfileId: "profile-1", thinkingSupported: true },
+    research: { provider: "deepseek", model: "deepseek-chat", providerProfileId: "profile-1", thinkingSupported: true },
+  },
+};
+
+function renderWithServices(ui: ReactNode, api: Partial<ApiClient> = {}) {
+  const services = {
+    api: { getAiConfiguration: async () => supportedConfig, ...api } as ApiClient,
+  } as unknown as AppServices;
+  return render(<ServicesProvider services={services}>{ui}</ServicesProvider>);
+}
+
+function renderComposer(onSubmit: (content: string, options: ComposerPreferences) => Promise<boolean>, scope = "test-scope") {
+  renderWithServices(<ChatComposer draftScope={scope} submitLabel="发送" onSubmit={onSubmit} />);
 }
 
 describe("ChatComposer", () => {
@@ -25,7 +50,7 @@ describe("ChatComposer", () => {
     await user.type(textarea, "什么是本地优先");
     await user.click(screen.getByRole("button", { name: "发送" }));
 
-    expect(onSubmit).toHaveBeenCalledWith("什么是本地优先", false);
+    expect(onSubmit).toHaveBeenCalledWith("什么是本地优先", { allowWebSearch: false, thinkingEnabled: false });
     expect(textarea).toHaveValue("什么是本地优先");
 
     release(true);
@@ -106,7 +131,7 @@ describe("ChatComposer", () => {
   it("提供 onImportFile 时附件按钮打开文件选择，选中后回传文件", async () => {
     const user = userEvent.setup();
     const onImportFile = vi.fn();
-    const { container } = render(
+    const { container } = renderWithServices(
       <ChatComposer
         draftScope="import-scope"
         submitLabel="发送"
@@ -146,14 +171,35 @@ describe("ChatComposer", () => {
     const onSubmit = vi.fn(async () => true);
     renderComposer(onSubmit, "web-search-toggle");
 
-    const toggle = screen.getByRole("checkbox", { name: "允许联网搜索" });
-    expect(toggle).not.toBeChecked();
+    const toggle = screen.getByRole("button", { name: "开启联网搜索" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
     await user.click(toggle);
-    expect(toggle).toBeChecked();
+    expect(screen.getByRole("button", { name: "关闭联网搜索" })).toHaveAttribute("aria-pressed", "true");
     await user.type(screen.getByLabelText("你的问题"), "查一下最新资料");
     await user.click(screen.getByRole("button", { name: "发送" }));
 
-    expect(onSubmit).toHaveBeenCalledWith("查一下最新资料", true);
+    expect(onSubmit).toHaveBeenCalledWith("查一下最新资料", { allowWebSearch: true, thinkingEnabled: false });
+  });
+
+  it("模型不支持时保留深度思考偏好，切回支持模型后自动恢复可用", async () => {
+    const user = userEvent.setup();
+    renderComposer(async () => true, "thinking-capability");
+
+    const thinking = await screen.findByRole("button", { name: "开启深度思考" });
+    await user.click(thinking);
+    expect(screen.getByRole("button", { name: "关闭深度思考" })).toHaveAttribute("aria-pressed", "true");
+
+    notifyAiConfigurationChanged({
+      ...supportedConfig,
+      routes: {
+        ...supportedConfig.routes!,
+        chat: { provider: "openai", model: "unknown-model", providerProfileId: "profile-2", thinkingSupported: false },
+      },
+    });
+    expect(await screen.findByRole("button", { name: /深度思考偏好已开启：当前模型/ })).toHaveAttribute("aria-pressed", "true");
+
+    notifyAiConfigurationChanged(supportedConfig);
+    expect(await screen.findByRole("button", { name: "关闭深度思考" })).toHaveAttribute("aria-pressed", "true");
   });
 });
 
@@ -172,7 +218,7 @@ describe("ChatComposer 双模发送（阶段 H4a）", () => {
   };
 
   it("有引用时显示胶囊与双模按钮，无普通发送按钮", () => {
-    render(
+    renderWithServices(
       <ChatComposer
         draftScope="test"
         submitLabel="发送"
@@ -193,7 +239,7 @@ describe("ChatComposer 双模发送（阶段 H4a）", () => {
   it("在此追问：携带选区文本作为引用上下文发送", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn(async (_content: string) => true);
-    render(
+    renderWithServices(
       <ChatComposer
         draftScope="test"
         submitLabel="发送"
@@ -217,7 +263,7 @@ describe("ChatComposer 双模发送（阶段 H4a）", () => {
   it("深入研究这段：调用 onStartChildNode，不需要输入也可点击", async () => {
     const user = userEvent.setup();
     const onStartChildNode = vi.fn(async () => true);
-    render(
+    renderWithServices(
       <ChatComposer
         draftScope="test"
         submitLabel="发送"
@@ -234,13 +280,13 @@ describe("ChatComposer 双模发送（阶段 H4a）", () => {
     await user.click(growButton);
 
     expect(onStartChildNode).toHaveBeenCalledTimes(1);
-    expect(onStartChildNode).toHaveBeenCalledWith("", false);
+    expect(onStartChildNode).toHaveBeenCalledWith("", { allowWebSearch: false, thinkingEnabled: false });
   });
 
   it("深入研究这段：输入框有内容时作为 query 传入", async () => {
     const user = userEvent.setup();
     const onStartChildNode = vi.fn(async () => true);
-    render(
+    renderWithServices(
       <ChatComposer
         draftScope="test"
         submitLabel="发送"
@@ -254,13 +300,13 @@ describe("ChatComposer 双模发送（阶段 H4a）", () => {
     await user.type(screen.getByLabelText("你的问题"), "把背后的机制讲透");
     await user.click(screen.getByRole("button", { name: "深入研究这段" }));
 
-    expect(onStartChildNode).toHaveBeenCalledWith("把背后的机制讲透", false);
+    expect(onStartChildNode).toHaveBeenCalledWith("把背后的机制讲透", { allowWebSearch: false, thinkingEnabled: false });
   });
 
   it("胶囊移除按钮触发 onRemoveCitation", async () => {
     const user = userEvent.setup();
     const onRemoveCitation = vi.fn();
-    render(
+    renderWithServices(
       <ChatComposer
         draftScope="test"
         submitLabel="发送"
@@ -276,7 +322,7 @@ describe("ChatComposer 双模发送（阶段 H4a）", () => {
   });
 
   it("有引用时提示语切换为在此追问说明", () => {
-    render(
+    renderWithServices(
       <ChatComposer
         draftScope="test"
         submitLabel="发送"
@@ -293,7 +339,7 @@ describe("ChatComposer 双模发送（阶段 H4a）", () => {
   it("Enter 在有引用时走在此追问路径", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn(async (_content: string) => true);
-    render(
+    renderWithServices(
       <ChatComposer
         draftScope="test"
         submitLabel="发送"

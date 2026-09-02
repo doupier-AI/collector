@@ -8,9 +8,9 @@ interface NodeView {
 async function submitWithSearchChoice(page: Page, allowWebSearch: boolean) {
   const question = allowWebSearch ? "允许联网的研究问题" : "默认不联网的研究问题";
   await pairAndOpen(page, "/research/new");
-  const toggle = page.getByRole("checkbox", { name: "允许联网搜索" });
-  await expect(toggle).not.toBeChecked();
-  if (allowWebSearch) await toggle.check();
+  const toggle = page.getByRole("button", { name: "开启联网搜索" });
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  if (allowWebSearch) await toggle.click();
 
   const requestPromise = page.waitForRequest(
     (request) => request.method() === "POST" && /\/v1\/research-nodes\/[^/]+\/messages$/.test(request.url()),
@@ -42,13 +42,40 @@ test("用户主动开启联网后沿用同一提交语义，并诚实显示供�
   await expect(page.getByText("当前模型供应商不支持联网")).toBeVisible();
 });
 
+test("联网偏好跨多轮、刷新和重新进入节点保持", async ({ page }) => {
+  await pairAndOpen(page, "/research/new");
+  await page.getByRole("button", { name: "开启联网搜索" }).click();
+  await page.getByLabel("你的问题").fill("第一轮开启联网");
+  await page.getByRole("button", { name: "开始研究" }).click();
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
+  const nodeUrl = page.url();
+  const nodeId = nodeUrl.split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
+  await expect(page.getByRole("button", { name: "关闭联网搜索" })).toHaveAttribute("aria-pressed", "true");
+
+  await page.reload();
+  await expect(page.getByRole("button", { name: "关闭联网搜索" })).toHaveAttribute("aria-pressed", "true");
+  await page.goto(new URL("/research/new", nodeUrl).toString());
+  await page.goto(nodeUrl);
+  await expect(page.getByRole("button", { name: "关闭联网搜索" })).toHaveAttribute("aria-pressed", "true");
+
+  const requestPromise = page.waitForRequest(
+    (request) => request.method() === "POST" && request.url().endsWith(`/v1/research-nodes/${nodeId}/messages`),
+  );
+  await page.getByLabel("你的问题").fill("第二轮继续联网");
+  await page.getByRole("button", { name: "发送" }).click();
+  const request = await requestPromise;
+  expect(JSON.parse(request.postData() ?? "{}")).toMatchObject({ allowWebSearch: true, thinkingEnabled: false });
+  const view = await apiJson<NodeView>(page, `/v1/research-nodes/${nodeId}`);
+  expect(view.tasks.at(-1)?.allowWebSearch).toBe(true);
+});
+
 test("grounded 回答收起来源，并从引用标记打开或定位对应来源", async ({ page }) => {
   const browserIssues = trackBrowserIssues(page);
   await page.context().route("https://example.com/**", async (route) => {
     await route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>来源</title>" });
   });
   await pairAndOpen(page, "/research/new");
-  await page.getByRole("checkbox", { name: "允许联网搜索" }).check();
+  await page.getByRole("button", { name: "开启联网搜索" }).click();
   await page.getByLabel("你的问题").fill("验证来源过滤");
   await page.getByRole("button", { name: "开始研究" }).click();
   await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });

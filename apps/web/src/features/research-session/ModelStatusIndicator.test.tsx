@@ -32,6 +32,10 @@ const activeConfig: AiConfigurationView = {
   provider: "openai",
   model: "gpt-4.1-mini",
   providerProfileId: "profile-1",
+  routes: {
+    chat: { provider: "openai", model: "gpt-4.1-mini", providerProfileId: "profile-1", thinkingSupported: false },
+    research: { provider: "openai", model: "gpt-4.1-mini", providerProfileId: "profile-1", thinkingSupported: false },
+  },
 };
 
 function renderIndicator(api: Partial<ApiClient>) {
@@ -73,7 +77,10 @@ describe("ModelStatusIndicator 快速切换", () => {
   it("无可用配置时展示空态并保留设置入口", async () => {
     const user = userEvent.setup();
     renderIndicator({
-      getAiConfiguration: vi.fn<ApiClient["getAiConfiguration"]>().mockResolvedValue({ consent: false, configured: false, mode: "unconfigured" }),
+      getAiConfiguration: vi.fn<ApiClient["getAiConfiguration"]>().mockResolvedValue({
+        consent: false, configured: false, mode: "unconfigured",
+        routes: { chat: { thinkingSupported: false }, research: { thinkingSupported: false } },
+      }),
       listProviderProfiles: vi.fn<ApiClient["listProviderProfiles"]>().mockResolvedValue([]),
     });
 
@@ -85,7 +92,11 @@ describe("ModelStatusIndicator 快速切换", () => {
   it("配置无效时展示具体失败原因而不是通用未配置文案", async () => {
     renderIndicator({
       getAiConfiguration: vi.fn<ApiClient["getAiConfiguration"]>()
-        .mockResolvedValue({ consent: true, configured: true, mode: "real", providerProfileId: "profile-1", modelError: "当前模型配置缺少 API Key。请在模型设置中补充凭证。" }),
+        .mockResolvedValue({
+          consent: true, configured: true, mode: "real", providerProfileId: "profile-1",
+          modelError: "当前模型配置缺少 API Key。请在模型设置中补充凭证。",
+          routes: { chat: { thinkingSupported: false }, research: { thinkingSupported: false } },
+        }),
       listProviderProfiles: vi.fn<ApiClient["listProviderProfiles"]>().mockResolvedValue([]),
     });
 

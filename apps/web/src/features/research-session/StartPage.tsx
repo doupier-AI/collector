@@ -1,4 +1,5 @@
 import { type DragEvent, useRef, useState } from "react";
+import type { ComposerPreferences } from "@collector/capture-contracts";
 import { useNavigate } from "react-router-dom";
 import { NetworkError, apiErrorCopy, isUnauthorized } from "../../api/errors";
 import { stableNodePath } from "../../app/paths";
@@ -113,14 +114,14 @@ export function StartPage() {
     }
   }
 
-  async function handleSubmit(content: string, allowWebSearch = false): Promise<boolean> {
+  async function handleSubmit(content: string, options: ComposerPreferences): Promise<boolean> {
     if (creatingRef.current) return false;
 
     // 文件已先创建会话 → 直接用 firstTurn 导航，不再创建
     if (createdSessionIdRef.current) {
       const idempotencyKey = globalThis.crypto.randomUUID();
       navigate(stableNodePath(createdSessionIdRef.current), {
-        state: { firstTurn: { content, idempotencyKey, allowWebSearch } },
+        state: { firstTurn: { content, idempotencyKey, options } },
       });
       return true;
     }
@@ -135,7 +136,7 @@ export function StartPage() {
       const idempotencyKey = globalThis.crypto.randomUUID();
       const created = await api.createResearchSession(creationKey);
       navigate(stableNodePath(created.id), {
-        state: { firstTurn: { content, idempotencyKey, allowWebSearch } },
+        state: { firstTurn: { content, idempotencyKey, options } },
       });
       return true;
     } catch (error) {

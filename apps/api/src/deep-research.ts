@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import {
+  DEFAULT_COMPOSER_PREFERENCES,
   buildGraphProjection,
   buildResearchGraphObservation,
   isResearchPermanentEdge,
   deriveDefaultResearchTitle,
   type CreateChildNodeInput,
+  type ComposerPreferences,
   type DeepResearchAccepted,
   type DeepResearchInput,
   type NodeGrowthAccepted,
@@ -118,6 +120,12 @@ export class DeepResearchService {
 
     const now = new Date().toISOString();
     const firstTurnContent = input.direction?.trim() || defaultFirstTurnContent(selection);
+    const sourceNode = this.store.getResearchNode(selection.nodeId ?? selection.sessionId);
+    const inherited = sourceNode?.composerPreferences ?? DEFAULT_COMPOSER_PREFERENCES;
+    const preferences: ComposerPreferences = {
+      allowWebSearch: input.allowWebSearch ?? inherited.allowWebSearch,
+      thinkingEnabled: input.thinkingEnabled ?? inherited.thinkingEnabled,
+    };
 
     let accepted: DeepResearchAccepted;
     if (input.mode === "branch") {
@@ -125,8 +133,8 @@ export class DeepResearchService {
         id: randomUUID(), sessionId: selection.sessionId, selectionId: selection.id,
         status: "active", createdAt: now, updatedAt: now,
       };
-      const { inputMessage, outputMessage, task } = this.buildFirstTurn(selection.sessionId, branch.id, firstTurnContent, idempotencyKey, now, input);
-      accepted = await this.store.createResearchBranch(originSession, branch, inputMessage, outputMessage, task);
+      const { inputMessage, outputMessage, task } = await this.buildFirstTurn(selection.sessionId, branch.id, firstTurnContent, idempotencyKey, now, preferences);
+      accepted = await this.store.createResearchBranch(originSession, branch, inputMessage, outputMessage, task, preferences);
     } else {
       const session: ResearchSessionRecord = {
         id: randomUUID(),
@@ -138,8 +146,8 @@ export class DeepResearchService {
         createdAt: now,
         updatedAt: now,
       };
-      const { inputMessage, outputMessage, task } = this.buildFirstTurn(session.id, undefined, firstTurnContent, idempotencyKey, now, input);
-      accepted = await this.store.createOriginResearchSession(session, inputMessage, outputMessage, task);
+      const { inputMessage, outputMessage, task } = await this.buildFirstTurn(session.id, undefined, firstTurnContent, idempotencyKey, now, preferences);
+      accepted = await this.store.createOriginResearchSession(session, inputMessage, outputMessage, task, preferences);
     }
     this.scheduleTask(accepted.task.id);
     return accepted;
@@ -192,30 +200,40 @@ export class DeepResearchService {
       id: randomUUID(), sessionId: branch.sessionId, nodeId: branch.id, branchId: branch.id, role: "assistant",
       content: "", status: "pending", createdAt: now, updatedAt: now,
     };
-    const allowWebSearch = options.allowWebSearch === true;
+    const currentPreferences = node.composerPreferences ?? DEFAULT_COMPOSER_PREFERENCES;
+    const preferences: ComposerPreferences = {
+      allowWebSearch: options.allowWebSearch ?? currentPreferences.allowWebSearch,
+      thinkingEnabled: options.thinkingEnabled ?? currentPreferences.thinkingEnabled,
+    };
+    const allowWebSearch = preferences.allowWebSearch;
+    const route = await this.options.research.resolveTaskRoute(true, preferences.thinkingEnabled);
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId: branch.sessionId, nodeId: branch.id, inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
       idempotencyKey, status: "queued", retryable: false,
-      provider: this.options.research.providerId,
-      model: this.options.research.modelId,
+      provider: route.provider,
+      model: route.model,
       promptVersion: RESEARCH_CHAT_PROMPT_VERSION,
       allowWebSearch,
+      thinkingEnabled: route.thinkingEnabled,
       ...(allowWebSearch ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
       createdAt: now, updatedAt: now,
     };
-    const accepted = await this.store.createResearchTurnForNode(node, inputMessage, outputMessage, task);
+    const accepted = await this.store.createResearchTurnForNode({
+      ...node,
+      composerPreferences: preferences,
+    }, inputMessage, outputMessage, task);
     this.scheduleTask(accepted.task.id);
     return accepted;
   }
 
-  private buildFirstTurn(
+  private async buildFirstTurn(
     sessionId: string,
     branchId: string | undefined,
     content: string,
     idempotencyKey: string,
     now: string,
-    options: ResearchTurnOptions,
-  ): { inputMessage: ResearchMessageRecord; outputMessage: ResearchMessageRecord; task: ResearchTaskRecord } {
+    preferences: ComposerPreferences,
+  ): Promise<{ inputMessage: ResearchMessageRecord; outputMessage: ResearchMessageRecord; task: ResearchTaskRecord }> {
     const inputMessage: ResearchMessageRecord = {
       id: randomUUID(), sessionId, branchId, role: "user",
       content, status: "completed", createdAt: now, updatedAt: now,
@@ -224,12 +242,16 @@ export class DeepResearchService {
       id: randomUUID(), sessionId, branchId, role: "assistant",
       content: "", status: "pending", createdAt: now, updatedAt: now,
     };
-    const allowWebSearch = options.allowWebSearch === true;
+    const allowWebSearch = preferences.allowWebSearch;
+    const route = await this.options.research.resolveTaskRoute(true, preferences.thinkingEnabled);
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId, inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
       idempotencyKey, status: "queued", retryable: false,
+      provider: route.provider,
+      model: route.model,
       promptVersion: DEEP_RESEARCH_PROMPT_VERSION,
       allowWebSearch,
+      thinkingEnabled: route.thinkingEnabled,
       ...(allowWebSearch ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
       createdAt: now, updatedAt: now,
     };
@@ -264,11 +286,17 @@ export class NodeGrowthService {
 
     const now = new Date().toISOString();
     const firstTurnContent = input.query?.trim() || defaultFirstTurnContent(selection);
+    const inherited = parentNode.composerPreferences ?? DEFAULT_COMPOSER_PREFERENCES;
+    const preferences: ComposerPreferences = {
+      allowWebSearch: input.allowWebSearch ?? inherited.allowWebSearch,
+      thinkingEnabled: input.thinkingEnabled ?? inherited.thinkingEnabled,
+    };
     const node: ResearchNodeRecord = {
       id: randomUUID(),
       sessionId: selection.sessionId,
       parentNodeId: parentNode.id,
       originSelectionId: selection.id,
+      composerPreferences: preferences,
       status: "active",
       createdAt: now,
       updatedAt: now,
@@ -281,15 +309,17 @@ export class NodeGrowthService {
       id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id, role: "assistant",
       content: "", status: "pending", createdAt: now, updatedAt: now,
     };
-    const allowWebSearch = input.allowWebSearch === true;
+    const allowWebSearch = preferences.allowWebSearch;
+    const route = await this.options.research.resolveTaskRoute(true, preferences.thinkingEnabled);
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id,
       inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
       idempotencyKey, status: "queued", retryable: false,
-      provider: this.options.research.providerId,
-      model: this.options.research.modelId,
+      provider: route.provider,
+      model: route.model,
       promptVersion: DEEP_RESEARCH_PROMPT_VERSION,
       allowWebSearch,
+      thinkingEnabled: route.thinkingEnabled,
       ...(allowWebSearch ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
       createdAt: now, updatedAt: now,
     };
@@ -342,6 +372,7 @@ export class NodeGrowthService {
       parentNodeId: parentNode.id,
       originSelectionId: selection.id,
       status: "active",
+      composerPreferences: { ...(parentNode.composerPreferences ?? DEFAULT_COMPOSER_PREFERENCES) },
       createdAt: now,
       updatedAt: now,
     };

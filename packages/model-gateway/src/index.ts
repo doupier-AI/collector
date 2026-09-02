@@ -14,6 +14,10 @@ import {
   promptEnvelopeText,
   resolveModelBudget,
 } from "./model-call.js";
+import { resolveModelThinkingCapability } from "./model-capabilities.js";
+
+export { OFFICIAL_MIMO_OPENAI_BASE_URL, resolveModelThinkingCapability } from "./model-capabilities.js";
+export type { ModelCapabilityIdentity, ModelThinkingCapability, ThinkingProtocol } from "./model-capabilities.js";
 
 export {
   DEFAULT_MODEL_BUDGET_LIMITS,
@@ -133,6 +137,8 @@ export interface ModelProvider {
   readonly defaultModel?: string;
   readonly pricing?: Record<string, ModelPricing>;
   complete(request: ModelProviderRequest): Promise<ModelProviderResponse>;
+  /** 只对集中能力解析器明确识别的实际模型返回 true。 */
+  supportsThinking?(model: string): boolean;
   /**
    * 真实模型逐字流式（方案 B）：能流式的 provider 在 complete() 之外另实现本方法。
    * 逐字增量以 {type:"delta"} 事件产出；供应商确认的引用元数据以 {type:"citation"}
@@ -388,7 +394,7 @@ export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
   defaultBaseUrl: "https://api.deepseek.com",
   defaultModel: "deepseek-v4-flash",
   models: ["deepseek-v4-flash", "deepseek-v4-pro"],
-  capabilities: { structuredJson: true, reasoningOutput: "deepseek_reasoning_content", thinkingMode: "deepseek", modelDiscovery: true, webGrounding: "unsupported" },
+  capabilities: { structuredJson: true, reasoningOutput: "openai_reasoning_content", thinkingMode: "openai_compatible", modelDiscovery: true, webGrounding: "unsupported" },
   pricing: {
     "deepseek-v4-flash": { inputCacheHitPerMillion: 0.0028, inputCacheMissPerMillion: 0.14, outputPerMillion: 0.28 },
     "deepseek-v4-pro": { inputCacheHitPerMillion: 0.003625, inputCacheMissPerMillion: 0.435, outputPerMillion: 0.87 },
@@ -506,8 +512,6 @@ export class ProviderRuntimeResolver {
     if (!apiKey) throw new Error(`Credential is unavailable for provider profile: ${profile.id}`);
     const gateway = new ModelGateway(createProvider(definition, { apiKey: () => apiKey, baseUrl: profile.baseUrl }), {
       model: profile.model,
-      // ADR-0035：深度思考默认关闭，由模型配置的开关控制；未保存过开关的旧配置同样按关闭处理。
-      thinking: profile.thinkingEnabled ?? false,
       pricing: this.pricing,
     });
     return {
@@ -651,6 +655,7 @@ export class ModelGateway {
 
   get providerName(): string { return this.provider.name; }
   get modelName(): string { return this.options.model ?? this.provider.defaultModel ?? "default"; }
+  get thinkingSupported(): boolean { return this.provider.supportsThinking?.(this.modelName) === true; }
   get providerGroundingCapability(): import("@collector/capture-contracts").ProviderWebGrounding {
     return this.provider instanceof OpenAiResponsesProvider ? "openai_web_search"
       : this.provider instanceof GeminiGroundingProvider ? "gemini_google_search"
@@ -710,7 +715,7 @@ export class ModelGateway {
       maxInputTokens: context.contextAssembly?.budget?.maxInputTokens ?? DEFAULT_MODEL_BUDGET_LIMITS.contextWindowTokens,
       maxOutputTokens,
       minimumBodyTokens: envelope.outputContract.minimumBodyTokens,
-      thinking: request.thinking ?? this.options.thinking ?? false,
+      thinking: (request.thinking ?? this.options.thinking ?? false) && this.provider.supportsThinking?.(request.model) === true,
     };
     const resolvedBudget = request.resolvedBudget ?? assertResolvedBudget(resolveModelBudget({
       envelope,
@@ -780,7 +785,7 @@ export class ModelGateway {
 
   async answerResearchConversationFromContext(
     assembly: AssembledModelContext,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number } = {},
+    options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number } = {},
   ): Promise<string> {
     return this.answerResearchConversation(
       [{ role: "user", content: formatAssembledModelContext(assembly) }],
@@ -790,14 +795,14 @@ export class ModelGateway {
 
   async planAnswerFromContext(
     assembly: AssembledModelContext,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+    options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
   ): Promise<string> {
     return this.planAnswer(formatAssembledModelContext(assembly), this.contextOptions(assembly, options));
   }
 
   async writeResearchBodyFromContext(
     assembly: AssembledModelContext,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number } = {},
+    options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number } = {},
   ): Promise<string> {
     return this.writeResearchBody(
       [{ role: "user", content: formatAssembledModelContext(assembly) }],
@@ -807,7 +812,7 @@ export class ModelGateway {
 
   async *writeResearchBodyStreamFromContext(
     assembly: AssembledModelContext,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number; resumeFrom?: string; onDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; onCitation?: (candidate: ResearchCitationCandidate) => void; citationSources?: readonly ResearchCitationSourceIdentity[]; signal?: AbortSignal } = {},
+    options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number; resumeFrom?: string; onDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; onCitation?: (candidate: ResearchCitationCandidate) => void; citationSources?: readonly ResearchCitationSourceIdentity[]; signal?: AbortSignal } = {},
   ): AsyncIterable<string> {
     const admittedResume = options.resumeFrom ? "[续写正文见已准入 continuation_state]" : undefined;
     yield* this.writeResearchBodyStream(
@@ -823,7 +828,7 @@ export class ModelGateway {
 
   async generateBodyOutlineFromContext(
     assembly: AssembledModelContext,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+    options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
   ): Promise<ResearchBodyOutline> {
     return this.generateBodyOutline([{ role: "user", content: formatAssembledModelContext(assembly) }], this.contextOptions(assembly, options));
   }
@@ -844,7 +849,7 @@ export class ModelGateway {
 
   async generateDeepResearchRoundFromContext(
     assembly: AssembledModelContext,
-    options: { mode: "branch" | "session"; nodeDepth?: number; model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext },
+    options: { mode: "branch" | "session"; nodeDepth?: number; model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext },
   ): Promise<string> {
     return this.generateDeepResearchRound({
       mode: options.mode,
@@ -984,7 +989,7 @@ export class ModelGateway {
 
   async answerResearchConversation(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
+    options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
   ): Promise<string> {
     if (!messages.length) throw new Error("Research conversation requires at least one message");
     const parentContext = formatResearchParentChainContext(options.parentChainContext);
@@ -996,7 +1001,7 @@ export class ModelGateway {
       envelope: createPromptEnvelope({ purpose: options.context?.purpose ?? "research_chat", promptVersion: options.context?.promptVersion ?? this.promptVersion, system, user, outputContract: { format: "text", contractVersion: "research-conversation-text-v1", minimumBodyTokens: 512 } }),
       prompt,
       model: options.model ?? this.modelName,
-      thinking: this.options.thinking ?? false,
+      thinking: options.thinking ?? false,
       maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
     }, options.context ?? { purpose: "research_chat" });
@@ -1012,7 +1017,7 @@ export class ModelGateway {
    */
   async planAnswer(
     admittedContext: string,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+    options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
   ): Promise<string> {
     const system = `You plan Collector answers across domains. Return one bounded JSON object and no prose.
 
@@ -1034,7 +1039,7 @@ Use only cross-domain operations. Semantic criteria are writing guidance, never 
       prompt: `${system}\n\n${user}`,
       model: options.model ?? this.modelName,
       responseFormat: { type: "json_object" },
-      thinking: false,
+      thinking: options.thinking ?? false,
       maxTokens: options.maxTokens ?? 1_500,
       timeoutMs: options.timeoutMs ?? 60_000,
       temperature: 0,
@@ -1045,7 +1050,7 @@ Use only cross-domain operations. Semantic criteria are writing guidance, never 
   /** Final writing stays free-form Markdown; task structure comes from admitted user rules and Answer Plan. */
   async writeResearchBody(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
+    options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
   ): Promise<string> {
     if (!messages.length) throw new Error("Research body requires at least one message");
     const promptVersion = options.context?.promptVersion ?? this.promptVersion;
@@ -1054,7 +1059,7 @@ Use only cross-domain operations. Semantic criteria are writing guidance, never 
       envelope: this.researchBodyEnvelope(messages, options.parentChainContext, options.sliceContext, options.context),
       prompt,
       model: options.model ?? this.modelName,
-      thinking: this.options.thinking ?? false,
+      thinking: options.thinking ?? false,
       maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
     }, options.context ?? { purpose: "research_body" });
@@ -1121,7 +1126,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
    */
   async *writeResearchBodyStream(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext; resumeFrom?: string; citationOffsetBase?: number; onDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; onCitation?: (candidate: ResearchCitationCandidate) => void; citationSources?: readonly ResearchCitationSourceIdentity[]; signal?: AbortSignal } = {},
+    options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext; resumeFrom?: string; citationOffsetBase?: number; onDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; onCitation?: (candidate: ResearchCitationCandidate) => void; citationSources?: readonly ResearchCitationSourceIdentity[]; signal?: AbortSignal } = {},
   ): AsyncIterable<string> {
     if (!messages.length) throw new Error("Research body requires at least one message");
     const promptVersion = options.context?.promptVersion ?? this.promptVersion;
@@ -1140,7 +1145,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
       envelope,
       prompt,
       model: options.model ?? this.modelName,
-      thinking: this.options.thinking ?? false,
+      thinking: options.thinking ?? false,
       maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
       ...(options.signal ? { signal: options.signal } : {}),
@@ -1227,7 +1232,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
    */
   async generateBodyOutline(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
+    options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
   ): Promise<ResearchBodyOutline> {
     if (!messages.length) throw new Error("Body outline requires at least one message");
     const parentContext = formatResearchParentChainContext(options.parentChainContext);
@@ -1248,7 +1253,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
       prompt,
       model: options.model ?? this.modelName,
       responseFormat: { type: "json_object" },
-      thinking: this.options.thinking ?? false,
+      thinking: options.thinking ?? false,
       maxTokens: options.maxTokens ?? 4_000,
       timeoutMs: options.timeoutMs ?? 120_000,
     }, options.context ?? { purpose: "research_body_outline" });
@@ -1279,7 +1284,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
       /** 降级重试时下调的目标字数。 */
       targetCharsOverride?: number;
     },
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number } = {},
+    options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number } = {},
   ): Promise<{ content: string; finishReason?: string }> {
     const section = input.outline.sections[input.sectionIndex];
     if (!section) throw new Error(`Body section ${input.sectionIndex} is out of range`);
@@ -1308,7 +1313,7 @@ ${continuation ? "- 直接从断点继续写正文，不要重复上面的内容
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
-      thinking: this.options.thinking ?? false,
+      thinking: options.thinking ?? false,
       maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
     }, options.context ?? { purpose: "research_body_section" });
@@ -1323,7 +1328,7 @@ ${continuation ? "- 直接从断点继续写正文，不要重复上面的内容
    */
   async deriveSliceAnnotations(
     input: { content: string },
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+    options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
   ): Promise<ResearchSliceAnnotation> {
     if (!input.content.trim()) return { title: "", concepts: [] };
     const prompt = `你是 Collector 的语义标注助手。下面是一段研究正文的段落。请为它抽取一个简洁标题和几个归一化概念，用于卡片导航与关联检索。
@@ -1359,7 +1364,7 @@ ${JSON.stringify(input.content)}`;
       coveredTerms: string[];
       nodeDepth: number;
     },
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+    options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
   ): Promise<string> {
     const prompt = `你是 Collector 的弱标记抽取助手。请只从给定正文块中选择理解当前论述确实需要解释的重要对象。
 
@@ -1838,7 +1843,7 @@ ${sourceLines}
       parentChainContext?: ResearchParentChainContext;
       sliceContext?: ResearchSliceContext;
     },
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+    options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
   ): Promise<string> {
     if (!input.selectionText.trim()) throw new Error("Deep research requires the source selection text");
     if (!input.direction.trim()) throw new Error("Deep research requires a research direction");
@@ -1867,7 +1872,7 @@ ${parentContext ? `\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
-      thinking: this.options.thinking ?? false,
+      thinking: options.thinking ?? false,
       maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
     }, options.context ?? { purpose: "deep_research" });
@@ -1978,7 +1983,7 @@ ${parentContext ? `\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext
         prompt: userMessage,
         model: this.modelName,
         maxTokens: options.maxTokens ?? 4096,
-        thinking: this.options.thinking ?? false,
+        thinking: false,
       }, callContext);
       const startedAt = Date.now();
       const createdAt = new Date().toISOString();
@@ -2201,7 +2206,7 @@ ${parentContext ? `\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext
         const prompt = "You are a technical writer. Draft full sections for a learning document titled \"" + outline.title + "\". Return valid JSON only.\n\nOutline:\n" + sectionSpecs + "\n\nSource Materials:\n" + materialText + "\n\nReturn JSON:\n{\n  \"sections\": [\n    {\n      \"heading\": string (matches outline heading),\n      \"markdown\": string (2-4 paragraph markdown section),\n      \"citationMaterialIds\": string[] (MATERIAL ids you cited)\n    }\n  ]\n}\n\nRULES:\n- Draft only claims supported by this source batch.\n- Cite materials by their MATERIAL id when you use specific information.\n- Only use material IDs from the provided list.\n- Do not invent content beyond what the materials contain.";
         const response = await this.complete({
           prompt, model: requestedModel, responseFormat: { type: "json_object" } as const,
-          thinking: options.thinking ?? true, maxTokens: options.maxTokens ?? 8000, timeoutMs: options.timeoutMs ?? 120000,
+          thinking: options.thinking ?? false, maxTokens: options.maxTokens ?? 8000, timeoutMs: options.timeoutMs ?? 120000,
         }, options.context ?? { purpose: "document_sections" });
         if (!response.content?.trim()) return { errorCode: "empty_response", errorMessage: "Empty sections response" };
         const parsed = JSON.parse(response.content.trim());
@@ -2246,7 +2251,7 @@ ${parentContext ? `\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext
           prompt,
           model: options.model ?? this.modelName,
           responseFormat: { type: "json_object" } as const,
-          thinking: options.thinking ?? true,
+          thinking: options.thinking ?? false,
           maxTokens: options.maxTokens ?? 5000,
           timeoutMs: options.timeoutMs ?? 120000,
         }, options.context ?? { purpose: "incremental_document_update" });
@@ -2344,6 +2349,15 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
+  supportsThinking(model: string): boolean {
+    return resolveModelThinkingCapability({
+      providerId: this.options.definition.id,
+      apiMode: this.options.definition.apiMode,
+      baseUrl: this.options.baseUrl ?? this.options.definition.defaultBaseUrl,
+      model,
+    }).thinkingSupported;
+  }
+
   async complete(request: ModelProviderRequest): Promise<ModelProviderResponse> {
     const apiKey = await this.options.apiKey();
     if (!apiKey) throw new Error(`${this.options.definition.label} API key is not configured`);
@@ -2361,7 +2375,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
       };
       if (wantsJson) body.response_format = request.responseFormat;
       if (typeof request.temperature === "number") body.temperature = request.temperature;
-      if (this.options.definition.capabilities.thinkingMode === "deepseek") body.thinking = { type: (request.appliedBudget?.thinking ?? request.thinking) ? "enabled" : "disabled" };
+      if (this.supportsThinking(request.model)) body.thinking = { type: (request.appliedBudget?.thinking ?? request.thinking) ? "enabled" : "disabled" };
       response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/chat/completions`, {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
@@ -2411,7 +2425,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
       };
       if (wantsJson) body.response_format = request.responseFormat;
       if (typeof request.temperature === "number") body.temperature = request.temperature;
-      if (this.options.definition.capabilities.thinkingMode === "deepseek") body.thinking = { type: (request.appliedBudget?.thinking ?? request.thinking) ? "enabled" : "disabled" };
+      if (this.supportsThinking(request.model)) body.thinking = { type: (request.appliedBudget?.thinking ?? request.thinking) ? "enabled" : "disabled" };
       response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/chat/completions`, {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
@@ -2443,7 +2457,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
         const choice = payload?.choices?.[0];
         // 只有供应商定义明确声明且适配器已验证的专用字段拥有 reasoning 资格；
         // 同一帧里先发 reasoning、再发正文，保证服务端持久化顺序与供应商语义一致。
-        if (this.options.definition.capabilities.reasoningOutput === "deepseek_reasoning_content") {
+        if (this.supportsThinking(request.model)) {
           const reasoning = choice?.delta?.reasoning_content;
           if (typeof reasoning === "string" && reasoning) yield { type: "reasoning", text: reasoning };
         }
@@ -2510,7 +2524,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
         tool_choice: "auto",
         max_tokens: options.maxTokens ?? 4096,
       };
-      if (this.options.definition.capabilities.thinkingMode === "deepseek") {
+      if (this.supportsThinking(options.model ?? this.defaultModel)) {
         body.thinking = { type: options.thinking ?? true ? "enabled" : "disabled" };
       }
       response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/chat/completions`, {

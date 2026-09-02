@@ -34,23 +34,26 @@ describe("TurnSubmitter 幂等键", () => {
     expect(keys).toEqual(["key-1", "key-1"]);
   });
 
-  it("网络重试沿用首次联网搜索选择", async () => {
-    const choices: boolean[] = [];
+  it("网络重试沿用首次会话选项", async () => {
+    const choices: Array<{ allowWebSearch: boolean; thinkingEnabled: boolean }> = [];
     let calls = 0;
     const submitter = new TurnSubmitter({
       generateKey: () => "key-1",
-      submit: async (_content, _key, allowWebSearch) => {
-        choices.push(allowWebSearch);
+      submit: async (_content, _key, options) => {
+        choices.push(options);
         calls += 1;
         if (calls === 1) throw new NetworkError();
         return makeTurn();
       },
     });
 
-    await expect(submitter.send("问题", { allowWebSearch: false })).rejects.toThrow();
-    await expect(submitter.send("问题", { allowWebSearch: true })).resolves.toBeDefined();
+    await expect(submitter.send("问题", { allowWebSearch: false, thinkingEnabled: true })).rejects.toThrow();
+    await expect(submitter.send("问题", { allowWebSearch: true, thinkingEnabled: false })).resolves.toBeDefined();
 
-    expect(choices).toEqual([false, false]);
+    expect(choices).toEqual([
+      { allowWebSearch: false, thinkingEnabled: true },
+      { allowWebSearch: false, thinkingEnabled: true },
+    ]);
   });
 
   it("确认成功后，用户下一次明确发送生成新键", async () => {

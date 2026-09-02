@@ -84,9 +84,10 @@ test("OpenAI-compatible Adapter maps roles and applies the exact resolved budget
     },
   });
   let event: ModelCallEvent | undefined;
-  const gateway = new ModelGateway(provider, { thinking: true, buildFingerprint: "build-test", onCall: (value) => { event = value; } });
+  const gateway = new ModelGateway(provider, { buildFingerprint: "build-test", onCall: (value) => { event = value; } });
 
   await gateway.answerResearchConversation([{ role: "user", content: "question" }], {
+    thinking: true,
     maxTokens: 1_234,
     context: { purpose: "research_chat", promptVersion: "chat-test-v1" },
   });

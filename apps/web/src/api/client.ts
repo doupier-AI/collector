@@ -1,5 +1,6 @@
 import type {
   AiConfigurationView,
+  ComposerPreferences,
   CreateChildNodeInput,
   DeepResearchAccepted,
   DeepResearchInput,
@@ -51,6 +52,7 @@ import type {
   ResearchFusionProposalRecord,
   ResearchFusionScanResult,
   ResearchNodeView,
+  ResearchNodeRecord,
   ResearchSelectionAccepted,
   ResearchSelectionInput,
   ResearchSelectionRecord,
@@ -110,7 +112,7 @@ export interface ApiClient {
   getRunRecord(id: string): Promise<RunRecordDetail>;
   createResearchSession(idempotencyKey: string, title?: string): Promise<ResearchSessionRecord>;
   getResearchSessionView(sessionId: string): Promise<ResearchSessionView>;
-  submitResearchMessage(sessionId: string, content: string, idempotencyKey: string, options?: { allowWebSearch?: boolean }): Promise<ResearchTurnAccepted>;
+  submitResearchMessage(sessionId: string, content: string, idempotencyKey: string, options: ComposerPreferences): Promise<ResearchTurnAccepted>;
   getResearchTask(taskId: string): Promise<ResearchTaskRecord>;
   retryResearchTask(taskId: string): Promise<ResearchTaskRecord>;
   /** ADR-0035：暂停生成（保留已写内容与断点）、从断点继续、停止（终态保留已写内容）。 */
@@ -134,14 +136,15 @@ export interface ApiClient {
   /** 从选区发起深入研究：分支或带来源的独立会话与第一轮任务先保存再生成。 */
   startDeepResearch(selectionId: string, input: DeepResearchInput, idempotencyKey: string): Promise<DeepResearchAccepted>;
   getResearchBranch(branchId: string): Promise<ResearchBranchView>;
-  submitBranchMessage(branchId: string, content: string, idempotencyKey: string, options?: { allowWebSearch?: boolean }): Promise<ResearchTurnAccepted>;
+  submitBranchMessage(branchId: string, content: string, idempotencyKey: string, options: ComposerPreferences): Promise<ResearchTurnAccepted>;
   /** 节点视图（阶段 H2）：根节点与子节点统一的数据入口。 */
   getResearchNodeView(nodeId: string): Promise<ResearchNodeView>;
+  updateResearchNodeComposerPreferences(nodeId: string, preferences: ComposerPreferences): Promise<ResearchNodeRecord>;
   /** #35 正文版本视图：版本 + 运行时派生的语义片段（含 excerpt）；#42 起前端定位依据片段使用。 */
   getResearchBodyVersion(bodyVersionId: string): Promise<ResearchBodyVersionView>;
   retryAnswerChapterParse(bodyVersionId: string): Promise<ResearchChapterTaskRecord>;
   /** 节点内追问：根节点与子节点统一的提交入口。 */
-  submitResearchNodeMessage(nodeId: string, content: string, idempotencyKey: string, options?: { allowWebSearch?: boolean }): Promise<ResearchTurnAccepted>;
+  submitResearchNodeMessage(nodeId: string, content: string, idempotencyKey: string, options: ComposerPreferences): Promise<ResearchTurnAccepted>;
   startResearchTermPreview(nodeId: string, input: ResearchTermPreviewInput, idempotencyKey: string): Promise<ResearchTermPreviewAccepted>;
   getResearchTermPreviewTask(taskId: string): Promise<ResearchTermPreviewRecord>;
   retryResearchTermPreviewTask(taskId: string): Promise<ResearchTermPreviewRecord>;
@@ -393,14 +396,14 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
     getResearchSessionView(sessionId: string) {
       return requestJson<ResearchSessionView>(fetchFn, `/v1/research-sessions/${encodeURIComponent(sessionId)}`);
     },
-    submitResearchMessage(sessionId: string, content: string, idempotencyKey: string, options = {}) {
+    submitResearchMessage(sessionId: string, content: string, idempotencyKey: string, options: ComposerPreferences) {
       return requestJson<ResearchTurnAccepted>(
         fetchFn,
         `/v1/research-sessions/${encodeURIComponent(sessionId)}/messages`,
         {
           method: "POST",
           headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
-          body: JSON.stringify({ content, allowWebSearch: options.allowWebSearch === true }),
+          body: JSON.stringify({ content, allowWebSearch: options.allowWebSearch === true, thinkingEnabled: options.thinkingEnabled === true }),
         },
       );
     },
@@ -496,20 +499,27 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
     getResearchNodeView(nodeId: string) {
       return requestJson<ResearchNodeView>(fetchFn, `/v1/research-nodes/${encodeURIComponent(nodeId)}`);
     },
+    updateResearchNodeComposerPreferences(nodeId, preferences) {
+      return requestJson<ResearchNodeRecord>(fetchFn, `/v1/research-nodes/${encodeURIComponent(nodeId)}/composer-preferences`, {
+        method: "PUT",
+        headers: JSON_HEADERS,
+        body: JSON.stringify(preferences),
+      });
+    },
     getResearchBodyVersion(bodyVersionId: string) {
       return requestJson<ResearchBodyVersionView>(
         fetchFn,
         `/v1/research-body-versions/${encodeURIComponent(bodyVersionId)}`,
       );
     },
-    submitResearchNodeMessage(nodeId: string, content: string, idempotencyKey: string, options = {}) {
+    submitResearchNodeMessage(nodeId: string, content: string, idempotencyKey: string, options: ComposerPreferences) {
       return requestJson<ResearchTurnAccepted>(
         fetchFn,
         `/v1/research-nodes/${encodeURIComponent(nodeId)}/messages`,
         {
           method: "POST",
           headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
-          body: JSON.stringify({ content, allowWebSearch: options.allowWebSearch === true }),
+          body: JSON.stringify({ content, allowWebSearch: options.allowWebSearch === true, thinkingEnabled: options.thinkingEnabled === true }),
         },
       );
     },
@@ -733,14 +743,14 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         },
       );
     },
-    submitBranchMessage(branchId: string, content: string, idempotencyKey: string, options = {}) {
+    submitBranchMessage(branchId: string, content: string, idempotencyKey: string, options: ComposerPreferences) {
       return requestJson<ResearchTurnAccepted>(
         fetchFn,
         `/v1/research-branches/${encodeURIComponent(branchId)}/messages`,
         {
           method: "POST",
           headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
-          body: JSON.stringify({ content, allowWebSearch: options.allowWebSearch === true }),
+          body: JSON.stringify({ content, allowWebSearch: options.allowWebSearch === true, thinkingEnabled: options.thinkingEnabled === true }),
         },
       );
     },

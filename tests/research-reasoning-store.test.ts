@@ -31,7 +31,8 @@ async function seedTurn(store: SqliteStore, suffix = "1"): Promise<{ input: Rese
   };
   const task: ResearchTaskRecord = {
     id: `task-${suffix}`, sessionId: "session-1", nodeId: "session-1", inputMessageId: input.id, outputMessageId: output.id,
-    idempotencyKey: `turn-key-${suffix}`, status: "queued", retryable: false, promptVersion: "v1", createdAt: NOW, updatedAt: NOW,
+    idempotencyKey: `turn-key-${suffix}`, status: "queued", retryable: false, promptVersion: "v1", thinkingEnabled: true,
+    createdAt: NOW, updatedAt: NOW,
   };
   const accepted = await store.createResearchTurn(
     store.getResearchSession("session-1")!,
@@ -147,6 +148,7 @@ test("reasoning lifecycle keeps continuations together and isolates retry, regen
   await store.appendResearchTaskDelta(task.id, "正文一", "思考一");
   await store.pauseResearchTask(task.id);
   await store.resumeResearchTask(task.id);
+  assert.equal(store.getResearchTask(task.id)?.thinkingEnabled, true, "pause/resume keeps the task-effective thinking value");
   store.claimResearchTask(task.id);
   await store.appendResearchTaskDelta(task.id, "正文二", "思考二");
   await store.completeResearchTask(task.id);
@@ -157,6 +159,7 @@ test("reasoning lifecycle keeps continuations together and isolates retry, regen
   assert.equal(store.getResearchTask(task.id)?.generationAttempt, 1);
 
   await store.regenerateResearchTask(store.getResearchTask(task.id)!);
+  assert.equal(store.getResearchTask(task.id)?.thinkingEnabled, true, "regenerate keeps the task-effective thinking value");
   message = store.getResearchMessage(output.id)!;
   assert.equal(message.reasoning, undefined);
   assert.equal(message.versions?.[0]?.reasoning, "思考一思考二");
@@ -166,6 +169,7 @@ test("reasoning lifecycle keeps continuations together and isolates retry, regen
   assert.equal(store.listResearchReasoningRecords(output.id).length, 2);
 
   await store.retryResearchTask(store.getResearchTask(task.id)!);
+  assert.equal(store.getResearchTask(task.id)?.thinkingEnabled, true, "retry keeps the task-effective thinking value");
   assert.equal(store.getResearchMessage(output.id)?.reasoning, undefined, "default retry must not reuse failed-attempt reasoning");
   assert.equal(store.listResearchReasoningRecords(output.id).length, 1, "default retry deletes only the unversioned failed attempt");
   store.claimResearchTask(task.id);

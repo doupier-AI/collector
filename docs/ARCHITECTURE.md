@@ -50,7 +50,7 @@ packages/model-gateway ──→ packages/capture-contracts
 | SQLite、迁移、删除级联与派生索引清理 | `apps/api/src/store.ts` |
 | 共享领域与传输契约 | `packages/capture-contracts/src/index.ts` |
 | 共享 Markdown 解析、安全渲染与源码/可见范围投影 | `packages/markdown-projection/src/index.ts` |
-| 模型供应商、模型路由和联网能力适配 | `packages/model-gateway/src/index.ts` |
+| 模型供应商、用途路由、集中模型能力解析和联网能力适配 | `packages/model-gateway/src/index.ts`、`packages/model-gateway/src/model-capabilities.ts` |
 | 服务端与共享测试 | `tests` |
 | Web 组件与浏览器测试 | `apps/web/src/**/*.test.tsx`、`apps/web/e2e` |
 
@@ -67,6 +67,7 @@ packages/model-gateway ──→ packages/capture-contracts
 ## 跨模块接缝
 
 - 研究工作空间拥有会话、节点、消息容器和生命周期。
+- 研究节点在既有 `record_json` 中保存输入偏好；生成任务在入队时按实际用途路由校验并固化本任务有效值，恢复与重新生成不重新读取节点偏好。
 - AI 回答与生成消费经准入的上下文与证据，只由最终写作阶段写正文。
 - 阅读与内容操作拥有正文呈现、导入内容、稳定位置和用户选区动作。
 - 来源与证据拥有来源身份、健康、定位和候选证据；不决定最终答案。

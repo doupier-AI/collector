@@ -356,7 +356,13 @@ describe("模型状态显示", () => {
   it("真实模型显示供应商与模型名", async () => {
     renderNodePage({
       getResearchNodeView: async () => viewWithAssistant("回答。"),
-      getAiConfiguration: async () => ({ consent: true, configured: true, mode: "real", provider: "deepseek", model: "deepseek-v4-pro" }),
+      getAiConfiguration: async () => ({
+        consent: true, configured: true, mode: "real", provider: "deepseek", model: "deepseek-v4-pro",
+        routes: {
+          chat: { provider: "deepseek", model: "deepseek-v4-pro", thinkingSupported: true },
+          research: { provider: "deepseek", model: "deepseek-v4-pro", thinkingSupported: true },
+        },
+      }),
     });
 
     expect(await screen.findByText("模型：deepseek · deepseek-v4-pro")).toBeInTheDocument();
@@ -365,7 +371,10 @@ describe("模型状态显示", () => {
   it("演示模式明确标识非真实 AI", async () => {
     renderNodePage({
       getResearchNodeView: async () => viewWithAssistant("回答。"),
-      getAiConfiguration: async () => ({ consent: false, configured: false, mode: "demo" }),
+      getAiConfiguration: async () => ({
+        consent: false, configured: false, mode: "demo",
+        routes: { chat: { thinkingSupported: false }, research: { thinkingSupported: false } },
+      }),
     });
 
     expect(await screen.findByText(/本地演示模式｜非真实 AI｜未联网检索/)).toBeInTheDocument();
@@ -374,7 +383,10 @@ describe("模型状态显示", () => {
   it("未配置模型时给出明确状态", async () => {
     renderNodePage({
       getResearchNodeView: async () => viewWithAssistant("回答。"),
-      getAiConfiguration: async () => ({ consent: false, configured: false, mode: "unconfigured" }),
+      getAiConfiguration: async () => ({
+        consent: false, configured: false, mode: "unconfigured",
+        routes: { chat: { thinkingSupported: false }, research: { thinkingSupported: false } },
+      }),
     });
 
     expect(await screen.findByText(/未配置模型/)).toBeInTheDocument();

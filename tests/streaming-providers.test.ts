@@ -148,8 +148,9 @@ test("网关 writeResearchBodyStream：reasoning 经 onReasoning 旁路转发，
 
 test("网关 writeResearchBodyStream：thinking 显式开启时透传到请求", async () => {
   const provider = new FakeProvider(["回答"]);
-  const gateway = new ModelGateway(provider, { model: "fake-model", thinking: true });
-  for await (const _delta of gateway.writeResearchBodyStream([{ role: "user", content: "问题" }])) { void _delta; }
+  Object.assign(provider, { supportsThinking: () => true });
+  const gateway = new ModelGateway(provider, { model: "fake-model" });
+  for await (const _delta of gateway.writeResearchBodyStream([{ role: "user", content: "问题" }], { thinking: true })) { void _delta; }
   assert.equal(provider.calls[0]?.thinking, true);
 });
 

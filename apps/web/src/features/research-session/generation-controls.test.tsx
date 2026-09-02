@@ -1,16 +1,23 @@
 import { render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ChatComposer } from "../chat-composer/ChatComposer";
 import { MessageItem } from "./MessageItem";
 import { makeMessage, makeTask } from "../../test/fakes";
+import { ServicesProvider, type AppServices } from "../../app/services";
+
+function renderWithServices(ui: ReactNode) {
+  const services = { api: { getAiConfiguration: async () => ({}) } } as unknown as AppServices;
+  return render(<ServicesProvider services={services}>{ui}</ServicesProvider>);
+}
 
 describe("输入区生成控制（ADR-0035）", () => {
   it("生成中由「暂停」占用发送按钮原位，点击回调暂停", async () => {
     const onPause = vi.fn();
     const task = makeTask({ outputMessageId: "answer", status: "running" });
     const user = userEvent.setup();
-    render(
+    renderWithServices(
       <ChatComposer
         draftScope="generation-running"
         submitLabel="发送"
@@ -30,7 +37,7 @@ describe("输入区生成控制（ADR-0035）", () => {
     const onStop = vi.fn();
     const task = makeTask({ outputMessageId: "answer", status: "paused" });
     const user = userEvent.setup();
-    render(
+    renderWithServices(
       <ChatComposer
         draftScope="generation-paused"
         submitLabel="发送"
@@ -48,7 +55,7 @@ describe("输入区生成控制（ADR-0035）", () => {
 
   it("停止后消息保留「已停止」，输入区恢复发送按钮", () => {
     const task = makeTask({ outputMessageId: "answer", status: "stopped" });
-    render(
+    renderWithServices(
       <>
         <ChatComposer
           draftScope="generation-stopped"
@@ -72,7 +79,7 @@ describe("输入区生成控制（ADR-0035）", () => {
   });
 
   it("没有进行中任务时不替换发送按钮", () => {
-    render(
+    renderWithServices(
       <ChatComposer draftScope="generation-idle" submitLabel="发送" onSubmit={async () => true} />,
     );
     expect(screen.getByRole("button", { name: "发送" })).toBeInTheDocument();

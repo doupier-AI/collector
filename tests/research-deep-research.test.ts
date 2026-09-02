@@ -639,15 +639,17 @@ test("node tree endpoint returns flat items with deterministic labels for root a
   const harness = await createHarness({ researchProvider: recordingProvider().provider });
   t.after(() => harness.close());
   const { session, assistantMessage } = await createSessionWithAnswer(harness);
+  await harness.service.updateResearchNodeComposerPreferences(session.id, { allowWebSearch: true, thinkingEnabled: true });
   const exact = "选区如何连接阅读与研究";
   const created = await createSelectionOn(harness, session.id, anchorForSelection(assistantMessage.id, 1, exact));
 
   // 从选区生长一个子节点
   const growth = await postJson(harness.base, harness.token, `/v1/research-selections/${created.selection.id}/nodes`, {}, randomUUID());
   assert.equal(growth.status, 202);
-  const accepted = await growth.json() as { node: { id: string; parentNodeId?: string; originSelectionId?: string } };
+  const accepted = await growth.json() as { node: { id: string; parentNodeId?: string; originSelectionId?: string; composerPreferences?: { allowWebSearch: boolean; thinkingEnabled: boolean } } };
   assert.equal(accepted.node.parentNodeId, session.id);
   assert.equal(accepted.node.originSelectionId, created.selection.id);
+  assert.deepEqual(accepted.node.composerPreferences, { allowWebSearch: true, thinkingEnabled: true });
 
   const treeResponse = await fetch(`${harness.base}/v1/research-sessions/${session.id}/nodes`, { headers: headers(harness.token) });
   assert.equal(treeResponse.status, 200);

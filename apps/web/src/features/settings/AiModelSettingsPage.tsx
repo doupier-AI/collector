@@ -112,7 +112,6 @@ export function ProviderProfileList({
                   <p className="settings-profile-item__meta">
                     {profile.providerId} · {profile.model}
                     {isActive ? " · 当前使用" : ""}
-                    {profile.thinkingEnabled ? " · 深度思考" : ""}
                     {profile.credentialConfigured ? "" : " · 未配置 Key"}
                     {profile.enabled ? "" : " · 已停用"}
                   </p>
@@ -417,8 +416,6 @@ function ProviderProfileForm({ catalog, activeProfile, profiles, editingProfile,
   const [keyLoad, setKeyLoad] = useState<KeyLoadState>("none");
   const [baseUrl, setBaseUrl] = useState(editingProfile?.baseUrl ?? activeProfile?.baseUrl ?? "");
   const [displayName, setDisplayName] = useState(editingProfile?.displayName ?? activeProfile?.displayName ?? "");
-  // ADR-0035：深度思考开关，默认关闭；仅对支持思考模式的供应商显示。
-  const [thinkingEnabled, setThinkingEnabled] = useState(editingProfile?.thinkingEnabled ?? false);
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
   const [checkedModels, setCheckedModels] = useState<string[]>([]);
   const [status, setStatus] = useState<FormStatus>({ kind: "idle" });
@@ -465,7 +462,6 @@ function ProviderProfileForm({ catalog, activeProfile, profiles, editingProfile,
       setBaseUrl(nextDefinition.defaultBaseUrl);
       setDisplayName(nextDefinition.label);
     }
-    setThinkingEnabled(false);
     setDiscoveredModels([]);
     setCheckedModels([]);
   };
@@ -479,7 +475,6 @@ function ProviderProfileForm({ catalog, activeProfile, profiles, editingProfile,
     displayName: effectiveDisplayName,
     model: effectiveModel,
     baseUrl: isCustom ? baseUrl : undefined,
-    thinkingEnabled,
     apiKey: apiKey.trim(),
   });
 
@@ -727,24 +722,6 @@ function ProviderProfileForm({ catalog, activeProfile, profiles, editingProfile,
             placeholder="https://api.example.com/v1"
           />
           <p className="settings-form__hint">自定义兼容端点必须使用 HTTPS 公网地址。</p>
-        </div>
-      ) : null}
-
-      {definition && definition.capabilities.thinkingMode !== "none" ? (
-        <div className="settings-form__field settings-form__field--toggle">
-          <label className="settings-form__checkbox">
-            <input
-              type="checkbox"
-              checked={thinkingEnabled}
-              onChange={(event) => setThinkingEnabled(event.target.checked)}
-            />
-            <span>
-              <span className="settings-form__label">深度思考</span>
-              <span className="settings-form__hint">
-                开启后回答前先进行推理，思考过程会流式显示在回答上方；思考会明显增加等待时间，且推理可能占用输出预算。
-              </span>
-            </span>
-          </label>
         </div>
       ) : null}
 

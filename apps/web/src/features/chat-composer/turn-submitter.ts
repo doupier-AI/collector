@@ -1,6 +1,6 @@
-import type { ResearchTurnAccepted } from "@collector/capture-contracts";
+import { DEFAULT_COMPOSER_PREFERENCES, type ComposerPreferences, type ResearchTurnAccepted } from "@collector/capture-contracts";
 
-export type SubmitTurnFn = (content: string, idempotencyKey: string, allowWebSearch: boolean) => Promise<ResearchTurnAccepted>;
+export type SubmitTurnFn = (content: string, idempotencyKey: string, options: ComposerPreferences) => Promise<ResearchTurnAccepted>;
 
 export interface TurnSubmitterOptions {
   submit: SubmitTurnFn;
@@ -20,7 +20,7 @@ function defaultGenerateKey(): string {
  */
 export class TurnSubmitter {
   private key: string | undefined;
-  private allowWebSearch: boolean | undefined;
+  private composerPreferences: ComposerPreferences | undefined;
   private pending: Promise<ResearchTurnAccepted> | undefined;
   private readonly submit: SubmitTurnFn;
   private readonly generateKey: () => string;
@@ -34,20 +34,23 @@ export class TurnSubmitter {
     return this.pending !== undefined;
   }
 
-  send(content: string, options?: { idempotencyKey?: string; allowWebSearch?: boolean }): Promise<ResearchTurnAccepted> {
+  send(content: string, options?: { idempotencyKey?: string } & Partial<ComposerPreferences>): Promise<ResearchTurnAccepted> {
     if (this.pending) return this.pending;
     const isNewRequest = this.key === undefined;
     const key = options?.idempotencyKey ?? this.key ?? this.generateKey();
     this.key = key;
-    if (isNewRequest) this.allowWebSearch = options?.allowWebSearch === true;
-    const request = this.submit(content, key, this.allowWebSearch === true);
+    if (isNewRequest) this.composerPreferences = {
+      allowWebSearch: options?.allowWebSearch ?? DEFAULT_COMPOSER_PREFERENCES.allowWebSearch,
+      thinkingEnabled: options?.thinkingEnabled ?? DEFAULT_COMPOSER_PREFERENCES.thinkingEnabled,
+    };
+    const request = this.submit(content, key, this.composerPreferences ?? { ...DEFAULT_COMPOSER_PREFERENCES });
     this.pending = request;
     const settle = (clearKey: boolean) => {
       if (this.pending === request) {
         this.pending = undefined;
         if (clearKey) {
           this.key = undefined;
-          this.allowWebSearch = undefined;
+          this.composerPreferences = undefined;
         }
       }
     };

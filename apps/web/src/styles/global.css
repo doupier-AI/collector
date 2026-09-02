@@ -3304,21 +3304,101 @@ button.model-status {
   min-width: 0;
 }
 
-.composer__web-search {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
+.composer__tool {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-circle);
+  background: transparent;
   color: var(--color-muted);
-  font-size: 0.8125rem;
-  white-space: nowrap;
   cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease, background-color 140ms ease;
 }
 
-.composer__web-search input {
-  accent-color: var(--color-ai);
-  width: 1rem;
-  height: 1rem;
-  margin: 0;
+.composer__tool:hover,
+.composer__tool:focus-visible {
+  border-color: var(--color-muted);
+  color: var(--color-ink);
+}
+
+.composer__tool:focus-visible {
+  outline: 2px solid var(--color-ai);
+  outline-offset: 2px;
+}
+
+.composer__tool--active {
+  border-color: var(--color-ai);
+  background: color-mix(in srgb, var(--color-ai) 10%, transparent);
+  color: var(--color-ai);
+}
+
+.composer__tool[aria-disabled="true"] {
+  border-color: var(--color-line);
+  background: transparent;
+  color: var(--color-muted);
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+.composer__tool::after {
+  display: none;
+  position: absolute;
+  z-index: 20;
+  bottom: calc(100% + 0.45rem);
+  left: 50%;
+  width: max-content;
+  max-width: min(18rem, calc(100vw - 2rem));
+  padding: 0.3rem 0.45rem;
+  border-radius: var(--radius-button);
+  background: var(--color-ink);
+  color: var(--color-surface);
+  content: attr(data-tooltip);
+  font-size: var(--font-size-sm);
+  line-height: 1.35;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 0.2rem);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.composer__tool:hover::after,
+.composer__tool:focus-visible::after {
+  display: block;
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+@media (max-width: 420px) {
+  .composer__bar-left {
+    gap: var(--space-1);
+  }
+
+  .composer__tool,
+  .composer__attach {
+    width: 2rem;
+    height: 2rem;
+  }
+
+  .composer__tool::after {
+    left: 0;
+    transform: translate(0, 0.2rem);
+  }
+
+  .composer__tool:hover::after,
+  .composer__tool:focus-visible::after {
+    transform: translate(0, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer__tool,
+  .composer__tool::after {
+    transition: none;
+  }
 }
 
 .composer__send {

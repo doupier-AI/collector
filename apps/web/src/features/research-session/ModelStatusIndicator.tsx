@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import type { AiConfigurationView, ProviderProfile } from "@collector/capture-contracts";
 import { useServices } from "../../app/services";
+import { notifyAiConfigurationChanged } from "./ai-configuration-events";
 
 type ModelStatusState =
   | { kind: "loading" }
@@ -34,7 +35,7 @@ export function ModelStatusIndicator({ variant = "status" }: { variant?: "status
   const [switchingId, setSwitchingId] = useState<string | undefined>(undefined);
   const [switchError, setSwitchError] = useState<string | undefined>(undefined);
 
-  const refreshConfig = useCallback(() => {
+  const refreshConfig = useCallback((notify = false) => {
     // 旧客户端或测试替身可能不提供该接口；状态点静默省略，不影响会话内容
     const query = api.getAiConfiguration?.bind(api);
     if (!query) {
@@ -42,7 +43,10 @@ export function ModelStatusIndicator({ variant = "status" }: { variant?: "status
       return;
     }
     query()
-      .then((config) => setState({ kind: "ready", config }))
+      .then((config) => {
+        setState({ kind: "ready", config });
+        if (notify) notifyAiConfigurationChanged(config);
+      })
       .catch(() => setState({ kind: "unavailable" }));
   }, [api]);
 
@@ -85,7 +89,7 @@ export function ModelStatusIndicator({ variant = "status" }: { variant?: "status
     setSwitchingId(profile.id);
     try {
       await activate(profile.id);
-      refreshConfig();
+      refreshConfig(true);
       setOpen(false);
     } catch (cause) {
       setSwitchError(cause instanceof Error ? cause.message : "切换模型失败，请重试");

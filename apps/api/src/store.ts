@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, hashBodyContent, researchBodyVersionId, resolveResearchStableLocation, validateResearchStableLocation, type AnswerPlan, type ConversationContext, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchContextAssemblySnapshot, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSidecarInvalidReason, type ResearchSidecarRecord, type ResearchSidecarRecordQuery, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageBodyRecord, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchReasoningRecord, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId, toResearchMessageBody } from "@collector/capture-contracts";
+import { DEFAULT_COMPOSER_PREFERENCES, LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, hashBodyContent, researchBodyVersionId, resolveResearchStableLocation, validateResearchStableLocation, type AnswerPlan, type ComposerPreferences, type ConversationContext, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchContextAssemblySnapshot, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSidecarInvalidReason, type ResearchSidecarRecord, type ResearchSidecarRecordQuery, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageBodyRecord, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchReasoningRecord, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId, toResearchMessageBody } from "@collector/capture-contracts";
 import { contextExplanationCodes, deriveMessageBlocks, observeContextAssembly } from "@collector/capture-contracts";
 import type { ResearchCitationCandidate } from "@collector/capture-contracts";
 import { markdownStableVisibleText, projectMarkdownDocument, projectMarkdownSourceRange } from "@collector/markdown-projection";
@@ -33,6 +33,10 @@ import {
 } from "@collector/capture-contracts";
 
 export type ObservabilityRecordSource = "research" | "import" | "fusion" | "chapter";
+
+function withComposerPreferences(node: ResearchNodeRecord): ResearchNodeRecord {
+  return node.composerPreferences ? node : { ...node, composerPreferences: { ...DEFAULT_COMPOSER_PREFERENCES } };
+}
 
 export interface ObservabilityRecordRow {
   source: ObservabilityRecordSource;
@@ -191,6 +195,7 @@ export interface ResearchStore extends ResearchSidecarStore, ResearchTermMarkerS
   createResearchNode(node: ResearchNodeRecord, idempotencyKey: string): Promise<ResearchNodeRecord>;
   getResearchNode(id: string): ResearchNodeRecord | undefined;
   updateResearchNodeDisplayName(nodeId: string, displayName: string): Promise<ResearchNodeRecord | undefined>;
+  updateResearchNodeComposerPreferences(nodeId: string, preferences: ComposerPreferences): Promise<ResearchNodeRecord | undefined>;
   listResearchNodes(sessionId: string): ResearchNodeRecord[];
   /** 全局正式节点集合；排除已进入回收站的会话，保留归档节点。 */
   listAllResearchNodes(): ResearchNodeRecord[];
@@ -277,11 +282,12 @@ export interface DeepResearchStore {
   getResearchBranch(id: string): ResearchBranchRecord | undefined;
   listResearchBranches(sessionId: string): ResearchBranchRecord[];
   findResearchBranchByCreationKey(sessionId: string, idempotencyKey: string): ResearchBranchRecord | undefined;
-  createResearchBranch(session: ResearchSessionRecord, branch: ResearchBranchRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted>;
-  createOriginResearchSession(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted>;
+  createResearchBranch(session: ResearchSessionRecord, branch: ResearchBranchRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord, composerPreferences?: ComposerPreferences): Promise<DeepResearchAccepted>;
+  createOriginResearchSession(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord, composerPreferences?: ComposerPreferences): Promise<DeepResearchAccepted>;
   createResearchChildNode(parentNode: ResearchNodeRecord, node: ResearchNodeRecord, selection: ResearchSelectionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<NodeGrowthAccepted>;
   getResearchNode(id: string): ResearchNodeRecord | undefined;
   updateResearchNodeDisplayName(nodeId: string, displayName: string): Promise<ResearchNodeRecord | undefined>;
+  updateResearchNodeComposerPreferences(nodeId: string, preferences: ComposerPreferences): Promise<ResearchNodeRecord | undefined>;
   listResearchNodes(sessionId: string): ResearchNodeRecord[];
   listChildNodes(parentNodeId: string): ResearchNodeRecord[];
   getResearchSession(id: string): ResearchSessionRecord | undefined;
@@ -479,8 +485,8 @@ export interface CollectorStore
   getResearchBranch(id: string): ResearchBranchRecord | undefined;
   listResearchBranches(sessionId: string): ResearchBranchRecord[];
   findResearchBranchByCreationKey(sessionId: string, idempotencyKey: string): ResearchBranchRecord | undefined;
-  createResearchBranch(session: ResearchSessionRecord, branch: ResearchBranchRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted>;
-  createOriginResearchSession(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted>;
+  createResearchBranch(session: ResearchSessionRecord, branch: ResearchBranchRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord, composerPreferences?: ComposerPreferences): Promise<DeepResearchAccepted>;
+  createOriginResearchSession(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord, composerPreferences?: ComposerPreferences): Promise<DeepResearchAccepted>;
   getResearchLaterItem(id: string): ResearchLaterItemRecord | undefined;
   findResearchLaterItemByCreationKey(idempotencyKey: string): ResearchLaterItemRecord | undefined;
   listResearchLaterItems(status?: ResearchLaterItemStatus): ResearchLaterItemRecord[];
@@ -794,11 +800,20 @@ export class SqliteStore implements CollectorStore {
   }
 
   getSetting(key: string) { return (this.db().prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined)?.value; }
-  getProviderProfile(id: string) { return this.getRecord<ProviderProfile>("SELECT record_json FROM provider_profiles WHERE id = ?", id); }
-  listProviderProfiles() { return this.listRecords<ProviderProfile>("SELECT record_json FROM provider_profiles ORDER BY updated_at DESC"); }
+  getProviderProfile(id: string) {
+    const profile = this.getRecord<ProviderProfile & { thinkingEnabled?: unknown }>("SELECT record_json FROM provider_profiles WHERE id = ?", id);
+    if (!profile) return undefined;
+    const { thinkingEnabled: _legacyThinking, ...current } = profile;
+    return current;
+  }
+  listProviderProfiles() {
+    return this.listRecords<ProviderProfile & { thinkingEnabled?: unknown }>("SELECT record_json FROM provider_profiles ORDER BY updated_at DESC")
+      .map(({ thinkingEnabled: _legacyThinking, ...current }) => current);
+  }
   async saveProviderProfile(profile: ProviderProfile) {
+    const { thinkingEnabled: _legacyThinking, ...current } = profile as ProviderProfile & { thinkingEnabled?: unknown };
     this.db().prepare("INSERT INTO provider_profiles (id, provider_id, enabled, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET provider_id=excluded.provider_id, enabled=excluded.enabled, updated_at=excluded.updated_at, record_json=excluded.record_json")
-      .run(profile.id, profile.providerId, profile.enabled ? 1 : 0, profile.createdAt, profile.updatedAt, JSON.stringify(profile));
+      .run(current.id, current.providerId, current.enabled ? 1 : 0, current.createdAt, current.updatedAt, JSON.stringify(current));
   }
   async deleteProviderProfile(id: string): Promise<boolean> {
     let deleted = false;
@@ -1131,7 +1146,8 @@ export class SqliteStore implements CollectorStore {
   }
 
   getResearchNode(id: string): ResearchNodeRecord | undefined {
-    return this.getRecord<ResearchNodeRecord>("SELECT record_json FROM research_nodes WHERE id = ?", id);
+    const node = this.getRecord<ResearchNodeRecord>("SELECT record_json FROM research_nodes WHERE id = ?", id);
+    return node ? withComposerPreferences(node) : undefined;
   }
 
   async updateResearchNodeDisplayName(nodeId: string, displayName: string): Promise<ResearchNodeRecord | undefined> {
@@ -1145,8 +1161,21 @@ export class SqliteStore implements CollectorStore {
     return updated;
   }
 
+  async updateResearchNodeComposerPreferences(nodeId: string, preferences: ComposerPreferences): Promise<ResearchNodeRecord | undefined> {
+    const node = this.getResearchNode(nodeId);
+    if (!node) return undefined;
+    const updated: ResearchNodeRecord = {
+      ...node,
+      composerPreferences: { ...preferences },
+      updatedAt: new Date().toISOString(),
+    };
+    this.db().prepare("UPDATE research_nodes SET updated_at = ?, record_json = ? WHERE id = ?")
+      .run(updated.updatedAt, JSON.stringify(updated), nodeId);
+    return updated;
+  }
+
   listResearchNodes(sessionId: string): ResearchNodeRecord[] {
-    return this.listRecords<ResearchNodeRecord>("SELECT record_json FROM research_nodes WHERE session_id = ? ORDER BY updated_at DESC, created_at DESC", sessionId);
+    return this.listRecords<ResearchNodeRecord>("SELECT record_json FROM research_nodes WHERE session_id = ? ORDER BY updated_at DESC, created_at DESC", sessionId).map(withComposerPreferences);
   }
 
   listAllResearchNodes(): ResearchNodeRecord[] {
@@ -1156,11 +1185,11 @@ export class SqliteStore implements CollectorStore {
       INNER JOIN research_sessions s ON s.id = n.session_id
       WHERE json_extract(s.record_json, '$.trashedAt') IS NULL
       ORDER BY n.updated_at DESC, n.created_at DESC, n.id
-    `);
+    `).map(withComposerPreferences);
   }
 
   listChildNodes(parentNodeId: string): ResearchNodeRecord[] {
-    return this.listRecords<ResearchNodeRecord>("SELECT record_json FROM research_nodes WHERE parent_node_id = ? ORDER BY created_at, rowid", parentNodeId);
+    return this.listRecords<ResearchNodeRecord>("SELECT record_json FROM research_nodes WHERE parent_node_id = ? ORDER BY created_at, rowid", parentNodeId).map(withComposerPreferences);
   }
 
   // ── Research Edge CRUD (D1) ──────────────────────────────────
@@ -1300,8 +1329,9 @@ export class SqliteStore implements CollectorStore {
       const session: ResearchSessionRecord = { ...updatedSession, updatedAt: task.createdAt };
       this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
         .run(session.updatedAt, JSON.stringify(session), session.id);
-      this.db().prepare("UPDATE research_nodes SET updated_at = ? WHERE id = ?")
-        .run(task.createdAt, node.id);
+      const updatedNode: ResearchNodeRecord = { ...node, updatedAt: task.createdAt };
+      this.db().prepare("UPDATE research_nodes SET updated_at = ?, record_json = ? WHERE id = ?")
+        .run(task.createdAt, JSON.stringify(updatedNode), node.id);
       this.insertResearchMessage(inputMessage);
       this.insertResearchMessage(outputMessage);
       this.insertResearchTask(task);
@@ -2814,7 +2844,7 @@ export class SqliteStore implements CollectorStore {
    * 深入研究分支创建：在同一事务中保存分支（来源关系）与第一轮消息、任务，
    * 再返回给服务层排队生成。幂等键命中时返回首次创建的分支与任务。
    */
-  async createResearchBranch(session: ResearchSessionRecord, branch: ResearchBranchRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted> {
+  async createResearchBranch(session: ResearchSessionRecord, branch: ResearchBranchRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord, composerPreferences: ComposerPreferences = { ...DEFAULT_COMPOSER_PREFERENCES }): Promise<DeepResearchAccepted> {
     let accepted: DeepResearchAccepted | undefined;
     this.transaction(() => {
       const existingBranch = this.findResearchBranchByCreationKey(branch.sessionId, task.idempotencyKey);
@@ -2831,6 +2861,7 @@ export class SqliteStore implements CollectorStore {
         sessionId: branch.sessionId,
         parentNodeId: branch.sessionId,
         originSelectionId: branch.selectionId,
+        composerPreferences,
         status: "active",
         createdAt: branch.createdAt,
         updatedAt: branch.updatedAt,
@@ -2863,7 +2894,7 @@ export class SqliteStore implements CollectorStore {
    * 带来源的独立研究会话创建：会话 origin 列、第一轮消息与任务在同一事务中保存。
    * 幂等键复用 research_sessions.creation_idempotency_key（全局唯一）。
    */
-  async createOriginResearchSession(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted> {
+  async createOriginResearchSession(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord, composerPreferences: ComposerPreferences = { ...DEFAULT_COMPOSER_PREFERENCES }): Promise<DeepResearchAccepted> {
     let accepted: DeepResearchAccepted | undefined;
     this.transaction(() => {
       const existing = this.getRecord<ResearchSessionRecord>("SELECT record_json FROM research_sessions WHERE creation_idempotency_key = ?", task.idempotencyKey);
@@ -2887,6 +2918,7 @@ export class SqliteStore implements CollectorStore {
         id: session.id,
         sessionId: session.id,
         originSelectionId: session.originSelectionId,
+        composerPreferences,
         status: "active",
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,

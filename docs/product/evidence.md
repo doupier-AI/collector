@@ -32,7 +32,7 @@
 
 ## 联网契约
 
-- 联网由用户逐次开启，默认关闭；关闭时不调用生产搜索或抓取 Adapter。
+- 联网搜索是当前研究节点的输入偏好，首次默认关闭，并在多轮、刷新和重新进入后保持；新子节点复制父节点当时的选择，之后独立保存。每个任务在入队时记录本轮选择，关闭时不调用生产搜索或抓取 Adapter。联网入口不依赖模型供应商能力，始终可以切换。
 - Answer Plan 可以声明证据政策，但不能自行开启联网。无需外部证据的任务即使用户已授权联网也不发起搜索。
 - 搜索与抓取 Adapter 只交付外部结果；查询规划、规范目标、最终重定向、内容摘要联合去重、资格、覆盖、冲突和停止语义由 Evidence Preparation 统一计算。模型判断只能作为带 producer/version 的候选输入，不能直接写政策状态。
 - 停止原因区分 `not_required`、`policy_satisfied`、`budget_exhausted`、`no_more_candidates` 和 `provider_failed`；模型 `finishReason=stop`、非空来源数组或固定轮数均不能代表覆盖完成。

@@ -183,6 +183,44 @@ test("research API persists an idempotent turn, streams fake-provider events, an
   reopened.close();
 });
 
+test("node preferences, first-turn options, and normalized task thinking persist through the API", async (t) => {
+  const provider: ResearchGenerationProvider = {
+    provider: "unsupported-thinking-provider",
+    model: "unknown-model",
+    async resolveTaskRoute(_deepResearch, requestedThinking) {
+      return { provider: "unsupported-thinking-provider", model: "unknown-model", thinkingEnabled: requestedThinking && false };
+    },
+    async *generate(request) {
+      assert.equal(request.thinkingEnabled, false);
+      yield "已按实际模型能力关闭深度思考。";
+    },
+  };
+  const harness = await createHarness(provider);
+  t.after(() => harness.close());
+  const session = await harness.service.research.createSession("会话偏好", randomUUID());
+
+  const response = await fetch(`${harness.base}/v1/research-nodes/${session.id}/messages`, {
+    method: "POST",
+    headers: { ...authHeaders(harness.token), "Idempotency-Key": randomUUID() },
+    body: JSON.stringify({ content: "保留偏好", allowWebSearch: true, thinkingEnabled: true }),
+  });
+  assert.equal(response.status, 202);
+  const accepted = await response.json() as { task: { id: string; allowWebSearch?: boolean; thinkingEnabled?: boolean } };
+  assert.equal(accepted.task.allowWebSearch, true);
+  assert.equal(accepted.task.thinkingEnabled, false, "任务保存实际路由归一化后的有效值");
+  assert.deepEqual(harness.store.getResearchNode(session.id)?.composerPreferences, { allowWebSearch: true, thinkingEnabled: true });
+  assert.equal(harness.store.listResearchMessages(session.id).length, 2);
+
+  const update = await fetch(`${harness.base}/v1/research-nodes/${session.id}/composer-preferences`, {
+    method: "PUT",
+    headers: authHeaders(harness.token),
+    body: JSON.stringify({ allowWebSearch: false, thinkingEnabled: true }),
+  });
+  assert.equal(update.status, 200);
+  const updatedNode = await update.json() as { composerPreferences?: { allowWebSearch: boolean; thinkingEnabled: boolean } };
+  assert.deepEqual(updatedNode.composerPreferences, { allowWebSearch: false, thinkingEnabled: true });
+});
+
 test("research generation persists clean text and independent mention ranges", async (t) => {
   const provider: ResearchGenerationProvider = {
     provider: "mention-stream-fake",

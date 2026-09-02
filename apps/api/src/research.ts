@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   RESEARCH_GROUNDING_MAX_SOURCES,
+  DEFAULT_COMPOSER_PREFERENCES,
   deriveBodyVersion,
   deriveFragmentsFromBlocks,
   deriveFragmentsFromSlices,
@@ -20,6 +21,7 @@ import {
   type ContextBudget,
   type ContextCandidate,
   type ContextPurpose,
+  type ComposerPreferences,
   type ConversationContext,
   type EvidenceBundle,
   type EvidencePolicyStatus,
@@ -280,6 +282,8 @@ export interface ResearchGenerationRequest {
   sliceOrdinalStart?: number;
   /** 本次请求是否获得用户明确授权使用联网搜索。 */
   allowWebSearch?: boolean;
+  /** 本任务入队时按实际路由校验后的深度思考有效值。 */
+  thinkingEnabled?: boolean;
   /** 深入研究第一轮：只携带当前已有材料，不含联网检索结果。 */
   deepResearch?: DeepResearchContext;
   /** 当前节点的有界父链上下文；根节点或无效父链不注入。 */
@@ -306,6 +310,8 @@ export interface ResearchGenerationProvider {
   readonly model: string;
   readonly promptVersion?: string;
   readonly groundingCapability?: import("@collector/capture-contracts").ProviderWebGrounding;
+  /** 入队前按实际 chat/research 路由再次解析模型身份与思考能力。 */
+  resolveTaskRoute?(deepResearch: boolean, requestedThinking: boolean): Promise<{ provider?: string; model?: string; thinkingEnabled: boolean }>;
   /** H3c 术语预览仍复用文本流，不参与节点回答的正式切片生成。 */
   generate(request: ResearchGenerationRequest): AsyncIterable<string>;
   /** 联网准备阶段只交付已确认定稿，或可追溯证据；不得把工作区文本伪装成正文。 */
@@ -367,6 +373,8 @@ export interface ResearchServiceOptions {
 export interface ResearchTurnOptions {
   /** 本次请求是否允许联网搜索；缺省即关闭。 */
   allowWebSearch?: boolean;
+  /** 用户在当前节点保存的思考偏好；任务仍会按实际路由归一化。 */
+  thinkingEnabled?: boolean;
 }
 
 export class ResearchSessionService {
@@ -418,6 +426,11 @@ export class ResearchSessionService {
       };
     }
     if (options.autoRunTasks !== false) this.scheduleRecovery();
+  }
+
+  async resolveTaskRoute(deepResearch: boolean, requestedThinking: boolean): Promise<{ provider?: string; model?: string; thinkingEnabled: boolean }> {
+    if (this.provider?.resolveTaskRoute) return this.provider.resolveTaskRoute(deepResearch, requestedThinking);
+    return { provider: this.provider?.provider, model: this.provider?.model, thinkingEnabled: false };
   }
 
   /** 发布"有事件"裸信号（不带载荷）；SSE 端收到后按游标重读，保证不丢、不重。 */
@@ -579,17 +592,30 @@ export class ResearchSessionService {
     const outputMessage: ResearchMessageRecord = {
       id: randomUUID(), sessionId, role: "assistant", content: "", status: "pending", createdAt: now, updatedAt: now,
     };
-    const allowWebSearch = options.allowWebSearch === true;
+    const rootNode = this.store.getResearchNode(session.id);
+    const currentPreferences = rootNode?.composerPreferences ?? DEFAULT_COMPOSER_PREFERENCES;
+    const preferences: ComposerPreferences = {
+      allowWebSearch: options.allowWebSearch ?? currentPreferences.allowWebSearch,
+      thinkingEnabled: options.thinkingEnabled ?? currentPreferences.thinkingEnabled,
+    };
+    const allowWebSearch = preferences.allowWebSearch;
+    const route = await this.resolveTaskRoute(false, preferences.thinkingEnabled);
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId, inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
       idempotencyKey, status: "queued", retryable: false,
-      provider: this.provider?.provider, model: this.provider?.model,
+      provider: route.provider, model: route.model,
       promptVersion: this.provider?.promptVersion ?? PROMPT_VERSION,
       allowWebSearch,
+      thinkingEnabled: route.thinkingEnabled,
       ...(allowWebSearch ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
       createdAt: now, updatedAt: now,
     };
-    const accepted = await this.store.createResearchTurn(session, inputMessage, outputMessage, task);
+    const accepted = rootNode
+      ? await this.store.createResearchTurnForNode({
+        ...rootNode,
+        composerPreferences: preferences,
+      }, { ...inputMessage, nodeId: rootNode.id }, { ...outputMessage, nodeId: rootNode.id }, { ...task, nodeId: rootNode.id })
+      : await this.store.createResearchTurn(session, inputMessage, outputMessage, task);
     if (this.options.autoRunTasks !== false) this.scheduleTask(accepted.task.id);
     try {
       // 任务入队即触发（与生成并行）：自动标题在回答完成前就绪，完成事件后客户端重拉视图即为新标题。
@@ -619,17 +645,27 @@ export class ResearchSessionService {
     const outputMessage: ResearchMessageRecord = {
       id: randomUUID(), sessionId: node.sessionId, nodeId: node.id, role: "assistant", content: "", status: "pending", createdAt: now, updatedAt: now,
     };
-    const allowWebSearch = options.allowWebSearch === true;
+    const currentPreferences = node.composerPreferences ?? DEFAULT_COMPOSER_PREFERENCES;
+    const preferences: ComposerPreferences = {
+      allowWebSearch: options.allowWebSearch ?? currentPreferences.allowWebSearch,
+      thinkingEnabled: options.thinkingEnabled ?? currentPreferences.thinkingEnabled,
+    };
+    const allowWebSearch = preferences.allowWebSearch;
+    const route = await this.resolveTaskRoute(false, preferences.thinkingEnabled);
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId: node.sessionId, nodeId: node.id, inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
       idempotencyKey, status: "queued", retryable: false,
-      provider: this.provider?.provider, model: this.provider?.model,
+      provider: route.provider, model: route.model,
       promptVersion: this.provider?.promptVersion ?? PROMPT_VERSION,
       allowWebSearch,
+      thinkingEnabled: route.thinkingEnabled,
       ...(allowWebSearch ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
       createdAt: now, updatedAt: now,
     };
-    const accepted = await this.store.createResearchTurnForNode(node, inputMessage, outputMessage, task);
+    const accepted = await this.store.createResearchTurnForNode({
+      ...node,
+      composerPreferences: preferences,
+    }, inputMessage, outputMessage, task);
     if (this.options.autoRunTasks !== false) this.scheduleTask(accepted.task.id);
     try {
       await this.options.onTaskQueued?.(accepted.task);
@@ -675,7 +711,7 @@ export class ResearchSessionService {
       && Boolean(this.provider?.prepareGrounded)
       && (hasStreamCheckpoint || Boolean(this.store.getResearchMessageBody(current.outputMessageId)?.content.trim()));
     const preserveContent = !restartGroundedEvidence && (hasCompletedSection || hasStreamCheckpoint);
-    const task = await this.store.retryResearchTask(current, this.provider?.provider, this.provider?.model, this.promptVersionForAttempt(current), { preserveContent });
+    const task = await this.store.retryResearchTask(current, current.provider, current.model, this.promptVersionForAttempt(current), { preserveContent });
     if (this.options.autoRunTasks !== false) this.scheduleTask(task.id);
     return task;
   }
@@ -730,7 +766,7 @@ export class ResearchSessionService {
     if (current.status !== "completed" && current.status !== "stopped") {
       throw new ResearchValidationError("Research task is not regenerable");
     }
-    const task = await this.store.regenerateResearchTask(current, this.provider?.provider, this.provider?.model, this.promptVersionForAttempt(current));
+    const task = await this.store.regenerateResearchTask(current, current.provider, current.model, this.promptVersionForAttempt(current));
     if (this.options.autoRunTasks !== false) this.scheduleTask(task.id);
     return task;
   }
@@ -769,7 +805,7 @@ export class ResearchSessionService {
       if (!session) throw new Error("Research session not found");
       const generation = this.buildGenerationRequest(current);
       const task = this.store.claimResearchTask(
-        id, this.provider?.provider, this.provider?.model,
+        id, current.provider, current.model,
         this.promptVersionForAttempt(current),
       );
       if (!task) return;
@@ -798,6 +834,7 @@ export class ResearchSessionService {
         conversationContext: generation.conversationContext,
         sliceOrdinalStart: this.sliceOrdinalStartFor(nodeId, task.outputMessageId),
         allowWebSearch: task.allowWebSearch === true,
+        thinkingEnabled: task.thinkingEnabled === true,
         ...(generation.deepResearch ? { deepResearch: generation.deepResearch } : {}),
         ...(generation.parentChainContext ? { parentChainContext: generation.parentChainContext } : {}),
         ...(generation.sliceContext ? { sliceContext: generation.sliceContext } : {}),
@@ -822,6 +859,8 @@ export class ResearchSessionService {
               ? "authorized"
               : provider.prepareGrounded ? "not_authorized" : "unavailable",
           },
+          thinkingEnabled: task.thinkingEnabled === true,
+          deepResearch: Boolean(generation.deepResearch),
           existing: task.answerPlanSnapshot,
         });
         await this.store.saveResearchTaskAnswerPlanSnapshot(task.id, answerPlanning.plan);

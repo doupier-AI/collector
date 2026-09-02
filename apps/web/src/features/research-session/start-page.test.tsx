@@ -55,11 +55,23 @@ describe("StartPage 会话创建", () => {
     const precise: ProviderProfile = { ...active, id: "profile-2", displayName: "精确模型", model: "deepseek-v4-pro" };
     const initialConfig: AiConfigurationView = {
       consent: true, configured: true, mode: "real", provider: "deepseek", model: active.model, providerProfileId: active.id,
+      routes: {
+        chat: { provider: "deepseek", model: active.model, providerProfileId: active.id, thinkingSupported: true },
+        research: { provider: "deepseek", model: active.model, providerProfileId: active.id, thinkingSupported: true },
+      },
     };
     const activateProviderProfile = vi.fn<ApiClient["activateProviderProfile"]>().mockResolvedValue(precise);
     const getAiConfiguration = vi.fn<ApiClient["getAiConfiguration"]>()
       .mockResolvedValueOnce(initialConfig)
-      .mockResolvedValue({ ...initialConfig, model: precise.model, providerProfileId: precise.id });
+      .mockResolvedValue({
+        ...initialConfig,
+        model: precise.model,
+        providerProfileId: precise.id,
+        routes: {
+          chat: { provider: "deepseek", model: precise.model, providerProfileId: precise.id, thinkingSupported: true },
+          research: { provider: "deepseek", model: precise.model, providerProfileId: precise.id, thinkingSupported: true },
+        },
+      });
 
     renderStartPage({
       getAiConfiguration,

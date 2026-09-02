@@ -3,7 +3,9 @@ import test from "node:test";
 import {
   deriveDefaultResearchTitle,
   RESEARCH_TITLE_MAX_CHARACTERS,
+  validateCreateChildNodeInput,
   validateDeepResearchInput,
+  validateResearchMessageInput,
 } from "@collector/capture-contracts";
 
 test("validateDeepResearchInput accepts branch and session modes", () => {
@@ -11,6 +13,9 @@ test("validateDeepResearchInput accepts branch and session modes", () => {
   assert.doesNotThrow(() => validateDeepResearchInput({ mode: "session" }));
   assert.doesNotThrow(() => validateDeepResearchInput({ mode: "session", direction: "研究这个机制", title: "研究标题" }));
   assert.doesNotThrow(() => validateDeepResearchInput({ mode: "branch", direction: "沿当前内容展开" }));
+  assert.doesNotThrow(() => validateDeepResearchInput({ mode: "branch", allowWebSearch: true, thinkingEnabled: true }));
+  assert.doesNotThrow(() => validateResearchMessageInput({ content: "继续", allowWebSearch: false, thinkingEnabled: true }));
+  assert.doesNotThrow(() => validateCreateChildNodeInput({ query: "展开", allowWebSearch: true, thinkingEnabled: false }));
 });
 
 test("validateDeepResearchInput rejects malformed input", () => {
@@ -23,6 +28,9 @@ test("validateDeepResearchInput rejects malformed input", () => {
   assert.throws(() => validateDeepResearchInput({ mode: "session", direction: "x".repeat(2001) }), /2000/);
   assert.throws(() => validateDeepResearchInput({ mode: "branch", title: "" }), /title/);
   assert.throws(() => validateDeepResearchInput({ mode: "branch", title: "x".repeat(201) }), /title/);
+  assert.throws(() => validateDeepResearchInput({ mode: "branch", thinkingEnabled: "yes" }), /thinkingEnabled/);
+  assert.throws(() => validateResearchMessageInput({ content: "继续", thinkingEnabled: 1 }), /thinkingEnabled/);
+  assert.throws(() => validateCreateChildNodeInput({ thinkingEnabled: null }), /thinkingEnabled/);
 });
 
 test("deriveDefaultResearchTitle takes the first sentence deterministically", () => {

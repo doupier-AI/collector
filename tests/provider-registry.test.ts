@@ -40,8 +40,8 @@ test("DeepSeek is a normal built-in provider definition", () => {
   assert.equal(BUILTIN_PROVIDER_DEFINITIONS.filter((definition) => definition.id === "deepseek").length, 1);
   const definition = DEFAULT_PROVIDER_REGISTRY.get("deepseek");
   assert.equal(definition.apiMode, "openai_chat_completions");
-  assert.equal(definition.capabilities.thinkingMode, "deepseek");
-  assert.equal(definition.capabilities.reasoningOutput, "deepseek_reasoning_content");
+  assert.equal(definition.capabilities.thinkingMode, "openai_compatible");
+  assert.equal(definition.capabilities.reasoningOutput, "openai_reasoning_content");
   assert.ok(BUILTIN_PROVIDER_DEFINITIONS.filter((candidate) => candidate.id !== "deepseek").every((candidate) => candidate.capabilities.reasoningOutput === "none"));
 });
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { resolveResearchStableLocation, type ResearchContentBlock, type ResearchContentView, type ResearchSelectionAnchor } from "@collector/capture-contracts";
+import { resolveResearchStableLocation, type ComposerPreferences, type ResearchContentBlock, type ResearchContentView, type ResearchSelectionAnchor } from "@collector/capture-contracts";
 import { markdownStableVisibleText, projectMarkdownDocument, projectMarkdownSourceRange } from "@collector/markdown-projection";
 import { isApiErrorCode, isUnauthorized, apiErrorCopy } from "../../api/errors";
 import { anchorCaption } from "../../app/anchorCaption";
@@ -65,7 +65,7 @@ export function ReadingPage() {
   if (submitterSessionRef.current !== sessionId) {
     submitterSessionRef.current = sessionId;
     submitterRef.current = new TurnSubmitter({
-      submit: (content, key, allowWebSearch) => api.submitResearchMessage(sessionId, content, key, { allowWebSearch }),
+      submit: (content, key, options) => api.submitResearchMessage(sessionId, content, key, options),
     });
   }
 
@@ -245,11 +245,11 @@ export function ReadingPage() {
   // #50 起提醒持续高亮，用户下一次框选时解除。
 
   const handleSubmitMessage = useCallback(
-    async (content: string, allowWebSearch = false): Promise<boolean> => {
+    async (content: string, options: ComposerPreferences): Promise<boolean> => {
       const submitter = submitterRef.current;
       if (!submitter) return false;
       try {
-        await submitter.send(content, { allowWebSearch });
+        await submitter.send(content, options);
         return true;
       } catch (error) {
         if (isUnauthorized(error)) {
@@ -262,14 +262,14 @@ export function ReadingPage() {
   );
 
   /** "深入研究这段"：以引用选区为来源创建子节点，导航到节点页。 */
-  async function handleStartChildNode(query: string, allowWebSearch = false): Promise<boolean> {
+  async function handleStartChildNode(query: string, options: ComposerPreferences): Promise<boolean> {
     if (!citedSelection) return false;
     try {
       const trimmed = query.trim();
       const idempotencyKey = childNodeIdempotencyKey(citedSelection.selectionId, trimmed, selectionExactDigest);
       const accepted = await api.startChildNode(
         citedSelection.selectionId,
-        { ...(trimmed ? { query: trimmed } : {}), allowWebSearch },
+        { ...(trimmed ? { query: trimmed } : {}), ...options },
         idempotencyKey,
       );
       removeCitation();

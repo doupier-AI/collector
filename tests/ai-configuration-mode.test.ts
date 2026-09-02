@@ -88,4 +88,37 @@ test("ai-configuration reports real mode when active profile has credential", as
   assert.equal(config.configured, true);
   assert.equal(config.provider, "openai");
   assert.equal(config.model, "gpt-4.1-mini");
+  assert.equal(config.routes?.chat.model, "gpt-4.1-mini");
+  assert.equal(config.routes?.chat.thinkingSupported, false);
+  assert.equal(config.routes?.research.model, "gpt-4.1-mini");
+});
+
+test("ai-configuration reports the actual chat and research route identities and thinking capabilities", async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+  const chat = {
+    id: "chat-profile", providerId: "openai", displayName: "Chat", baseUrl: "https://api.openai.com/v1",
+    model: "gpt-4.1-mini", credentialConfigured: true, enabled: true, configurationVersion: 1,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+  };
+  const research = {
+    id: "research-profile", providerId: "deepseek", displayName: "Research", baseUrl: "https://api.deepseek.com",
+    model: "DeepSeek-V4-Pro", credentialConfigured: true, enabled: true, configurationVersion: 1,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+  };
+  await harness.store.saveProviderProfile(chat);
+  await harness.store.saveProviderProfile(research);
+  await harness.store.saveProviderCredential(chat.id, "sk-chat");
+  await harness.store.saveProviderCredential(research.id, "sk-research");
+  await harness.store.setActiveProviderProfile(chat.id);
+  await harness.store.setModelPurposeRoute("research", research.id);
+
+  const config = await getConfiguration(harness.base, harness.token);
+  assert.deepEqual(config.routes?.chat, {
+    provider: "openai", model: "gpt-4.1-mini", providerProfileId: "chat-profile", thinkingSupported: false,
+    unavailableReason: "当前模型不支持深度思考。",
+  });
+  assert.deepEqual(config.routes?.research, {
+    provider: "deepseek", model: "DeepSeek-V4-Pro", providerProfileId: "research-profile", thinkingSupported: true,
+  });
 });

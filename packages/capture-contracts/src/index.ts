@@ -1,7 +1,7 @@
 export type ProviderApiMode = "openai_chat_completions" | "openai_responses" | "gemini_generate_content" | "anthropic_messages";
 export type ProviderAuthMode = "bearer" | "api_key_header";
-export type ProviderThinkingMode = "none" | "deepseek";
-export type ProviderReasoningOutput = "none" | "deepseek_reasoning_content";
+export type ProviderThinkingMode = "none" | "openai_compatible";
+export type ProviderReasoningOutput = "none" | "openai_reasoning_content";
 export type ProviderWebGrounding = "unsupported" | "openai_web_search" | "gemini_google_search" | "anthropic_web_search";
 
 export interface ProviderCapabilities {
@@ -40,8 +40,6 @@ export interface ProviderProfile {
   model: string;
   credentialConfigured: boolean;
   enabled: boolean;
-  /** 深度思考开关（ADR-0035）：仅对支持思考模式的供应商有意义；缺省即关闭。 */
-  thinkingEnabled?: boolean;
   configurationVersion: number;
   createdAt: string;
   updatedAt: string;
@@ -54,8 +52,6 @@ export interface ProviderProfileInput {
   baseUrl?: string;
   model: string;
   enabled?: boolean;
-  /** 深度思考开关；缺省关闭。 */
-  thinkingEnabled?: boolean;
   /** 真实 API Key：仅创建/更新时提交。列表与详情读取响应不含 Key；只有专用凭证读取端点向已认证的本地客户端回传，用于设置页回填暗文显示。 */
   apiKey?: string;
 }
@@ -1711,6 +1707,8 @@ export interface ResearchNodeRecord {
   displayName?: string;
   /** #31：确认式融合创建的融合节点标记（存 record_json，零迁移）；无父链，来源关系由 fused-from 边表达。 */
   isFusionNode?: boolean;
+  /** 本节点输入区偏好；旧记录缺省为两个开关均关闭。 */
+  composerPreferences?: ComposerPreferences;
   status: "active";
   createdAt: string;
   updatedAt: string;
@@ -1956,6 +1954,26 @@ export function messageUsesSectionCards(
 
 export type AiConfigurationMode = "real" | "demo" | "unconfigured";
 
+export interface ComposerPreferences {
+  allowWebSearch: boolean;
+  thinkingEnabled: boolean;
+}
+
+export const DEFAULT_COMPOSER_PREFERENCES: Readonly<ComposerPreferences> = Object.freeze({
+  allowWebSearch: false,
+  thinkingEnabled: false,
+});
+
+export interface AiRouteConfigurationView {
+  provider?: string;
+  model?: string;
+  providerProfileId?: string;
+  /** 只由集中式能力解析器根据实际端点与模型身份给出；未知身份恒为 false。 */
+  thinkingSupported: boolean;
+  /** 路由配置或能力读取失败时提供克制的用户可见原因。 */
+  unavailableReason?: string;
+}
+
 export interface AiConfigurationView {
   consent: boolean;
   configured: boolean;
@@ -1972,6 +1990,11 @@ export interface AiConfigurationView {
   availableSearchBackends?: string[];
   /** 网关重建失败的具体原因（配置停用/凭证缺失/解析失败）；网关可用时缺省。 */
   modelError?: string;
+  /** 普通发送与深入研究各自实际解析出的路由。 */
+  routes: {
+    chat: AiRouteConfigurationView;
+    research: AiRouteConfigurationView;
+  };
 }
 
 // ── Research Selection ─────────────────────────────────────────────
@@ -2369,6 +2392,8 @@ export interface ResearchTaskRecord {
   sliceCount?: number;
   /** 本次任务是否获得用户明确授权使用联网搜索；缺省值只兼容旧任务，服务端按 false 处理。 */
   allowWebSearch?: boolean;
+  /** 本任务入队时按实际 chat/research 路由归一化后的有效值；旧任务缺省为 false。 */
+  thinkingEnabled?: boolean;
   groundingScope?: ResearchGroundingScope;
   /** plan-then-write 长文任务的逐节计划与进度；仅存于 record_json，用于断点续扩。 */
   bodyPlan?: ResearchBodyPlan;
@@ -2489,13 +2514,21 @@ export function validateResearchImportHeaders(fileName: unknown, mimeType: unkno
   }
 }
 
-export function validateResearchMessageInput(value: unknown): asserts value is { content: string; allowWebSearch?: boolean } {
+export function validateResearchMessageInput(value: unknown): asserts value is { content: string; allowWebSearch?: boolean; thinkingEnabled?: boolean } {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Research message input must be an object");
-  const input = value as { content?: unknown; allowWebSearch?: unknown };
+  const input = value as { content?: unknown; allowWebSearch?: unknown; thinkingEnabled?: unknown };
   const content = input.content;
   if (typeof content !== "string" || !content.trim()) throw new Error("content is required");
   if (content.length > 200_000) throw new Error("content must not exceed 200000 characters");
   if (input.allowWebSearch !== undefined && typeof input.allowWebSearch !== "boolean") throw new Error("allowWebSearch must be a boolean when provided");
+  if (input.thinkingEnabled !== undefined && typeof input.thinkingEnabled !== "boolean") throw new Error("thinkingEnabled must be a boolean when provided");
+}
+
+export function validateComposerPreferences(value: unknown): asserts value is ComposerPreferences {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Composer preferences must be an object");
+  const preferences = value as Partial<Record<keyof ComposerPreferences, unknown>>;
+  if (typeof preferences.allowWebSearch !== "boolean") throw new Error("allowWebSearch must be a boolean");
+  if (typeof preferences.thinkingEnabled !== "boolean") throw new Error("thinkingEnabled must be a boolean");
 }
 
 // ── Deep Research (MVP 阶段 C) ─────────────────────────────
@@ -2526,6 +2559,8 @@ export interface DeepResearchInput {
   title?: string;
   /** 本次第一轮是否允许联网搜索，默认关闭。 */
   allowWebSearch?: boolean;
+  /** 本次任务是否偏好深度思考；服务端仍按 research 实际路由归一化。 */
+  thinkingEnabled?: boolean;
 }
 
 /** 从选区/弱标记生长子节点的输入（阶段 H）。 */
@@ -2534,13 +2569,15 @@ export interface CreateChildNodeInput {
   query?: string;
   /** 本次首轮是否允许联网搜索，默认关闭。 */
   allowWebSearch?: boolean;
+  /** 新节点继承父偏好后，本次首轮提交可携带当前思考偏好。 */
+  thinkingEnabled?: boolean;
 }
 
 export const CHILD_NODE_QUERY_MAX_CHARACTERS = 2000;
 
 export function validateCreateChildNodeInput(value: unknown): asserts value is CreateChildNodeInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Child node input must be an object");
-  const input = value as { query?: unknown; allowWebSearch?: unknown };
+  const input = value as { query?: unknown; allowWebSearch?: unknown; thinkingEnabled?: unknown };
   if (input.query !== undefined) {
     if (typeof input.query !== "string" || !input.query.trim()) {
       throw new Error("query must be a non-empty string when provided");
@@ -2550,6 +2587,7 @@ export function validateCreateChildNodeInput(value: unknown): asserts value is C
     }
   }
   if (input.allowWebSearch !== undefined && typeof input.allowWebSearch !== "boolean") throw new Error("allowWebSearch must be a boolean when provided");
+  if (input.thinkingEnabled !== undefined && typeof input.thinkingEnabled !== "boolean") throw new Error("thinkingEnabled must be a boolean when provided");
 }
 
 export function validateResearchTermPreviewInput(value: unknown): asserts value is ResearchTermPreviewInput {
@@ -2588,7 +2626,7 @@ export const RESEARCH_DIRECTION_MAX_CHARACTERS = 2000;
 
 export function validateDeepResearchInput(value: unknown): asserts value is DeepResearchInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Deep research input must be an object");
-  const input = value as { mode?: unknown; direction?: unknown; title?: unknown; allowWebSearch?: unknown };
+  const input = value as { mode?: unknown; direction?: unknown; title?: unknown; allowWebSearch?: unknown; thinkingEnabled?: unknown };
   if (input.mode !== "branch" && input.mode !== "session") throw new Error("mode must be branch or session");
   if (input.direction !== undefined) {
     if (typeof input.direction !== "string" || !input.direction.trim()) {
@@ -2602,6 +2640,7 @@ export function validateDeepResearchInput(value: unknown): asserts value is Deep
     throw new Error("title must contain 1 to 200 characters when provided");
   }
   if (input.allowWebSearch !== undefined && typeof input.allowWebSearch !== "boolean") throw new Error("allowWebSearch must be a boolean when provided");
+  if (input.thinkingEnabled !== undefined && typeof input.thinkingEnabled !== "boolean") throw new Error("thinkingEnabled must be a boolean when provided");
 }
 
 export const RESEARCH_TITLE_MAX_CHARACTERS = 40;
@@ -3932,8 +3971,8 @@ export function validateProviderDefinition(value: unknown): asserts value is Pro
   if (!definition.defaultModel?.trim()) throw new Error("Provider defaultModel is required");
   if (!Array.isArray(definition.models) || definition.models.some((model) => typeof model !== "string" || !model.trim())) throw new Error("Provider models must be non-empty strings");
   if (!definition.capabilities || typeof definition.capabilities.structuredJson !== "boolean" || typeof definition.capabilities.modelDiscovery !== "boolean") throw new Error("Provider capabilities are required");
-  if (!(["none", "deepseek_reasoning_content"] as ProviderReasoningOutput[]).includes(definition.capabilities.reasoningOutput)) throw new Error("Invalid provider reasoningOutput");
-  if (!(["none", "deepseek"] as ProviderThinkingMode[]).includes(definition.capabilities.thinkingMode)) throw new Error("Invalid provider thinkingMode");
+  if (!(["none", "openai_reasoning_content"] as ProviderReasoningOutput[]).includes(definition.capabilities.reasoningOutput)) throw new Error("Invalid provider reasoningOutput");
+  if (!(["none", "openai_compatible"] as ProviderThinkingMode[]).includes(definition.capabilities.thinkingMode)) throw new Error("Invalid provider thinkingMode");
   if (!(["unsupported", "openai_web_search", "gemini_google_search", "anthropic_web_search"] as ProviderWebGrounding[]).includes(definition.capabilities.webGrounding)) throw new Error("Invalid provider webGrounding");
 }
 

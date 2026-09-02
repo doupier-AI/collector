@@ -1,9 +1,10 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
-import type { ResearchTaskRecord } from "@collector/capture-contracts";
+import { DEFAULT_COMPOSER_PREFERENCES, type ComposerPreferences, type ResearchTaskRecord } from "@collector/capture-contracts";
 import { SelectionCapsule } from "../selection/SelectionCapsule";
 import type { CitedSelection } from "../selection/useSelectionCitation";
 import { clearDraft, loadDraft, saveDraft } from "./draft";
+import { useAiRouteConfiguration } from "../research-session/useAiRouteConfiguration";
 
 export interface ChatComposerProps {
   /** 草稿作用域："new" 或会话 id。 */
@@ -12,10 +13,15 @@ export interface ChatComposerProps {
   placeholder?: string;
   /** 外部错误说明（如首次创建会话失败），优先于内部提交错误展示。 */
   externalError?: string | null;
+  preferenceError?: string | null;
   disabled?: boolean;
   autoFocus?: boolean;
   /** 返回 true 表示后端已确认保存，输入框才会清空。 */
-  onSubmit: (content: string, allowWebSearch: boolean) => Promise<boolean>;
+  onSubmit: (content: string, options: ComposerPreferences) => Promise<boolean>;
+  /** 节点页由服务端偏好驱动；开始页缺省时由组件本地保存到首轮提交。 */
+  preferences?: ComposerPreferences;
+  onPreferencesChange?: (preferences: ComposerPreferences) => void | Promise<void>;
+  thinkingPurpose?: "chat" | "research";
   /** 提供后附件按钮打开真实文件选择；缺省时保持占位提示（开始页）。 */
   onImportFile?: (file: File) => void;
   /** 文件选择器的 accept 值，仅在 onImportFile 提供时生效。 */
@@ -29,7 +35,7 @@ export interface ChatComposerProps {
    * 入参是用户在输入框中可选填写的追问方向（可为空）。
    * 返回 true 表示后端已确认，输入框清空。
    */
-  onStartChildNode?: (query: string, allowWebSearch: boolean) => Promise<boolean>;
+  onStartChildNode?: (query: string, options: ComposerPreferences) => Promise<boolean>;
   /** 生成中或暂停中的任务占用原发送按钮位置，提供暂停/继续/停止。 */
   generationTask?: ResearchTaskRecord;
   onPauseTask?: (task: ResearchTaskRecord) => void;
@@ -50,9 +56,13 @@ export function ChatComposer({
   submitLabel,
   placeholder = "输入你想理解、比较或继续研究的问题……",
   externalError = null,
+  preferenceError = null,
   disabled = false,
   autoFocus = false,
   onSubmit,
+  preferences,
+  onPreferencesChange,
+  thinkingPurpose = "chat",
   onImportFile,
   importAccept,
   citedSelection,
@@ -72,7 +82,8 @@ export function ChatComposer({
   const [attachNoticeVisible, setAttachNoticeVisible] = useState(false);
   const [growingNode, setGrowingNode] = useState(false);
   const [growError, setGrowError] = useState<string | null>(null);
-  const [allowWebSearch, setAllowWebSearch] = useState(false);
+  const [localPreferences, setLocalPreferences] = useState<ComposerPreferences>(() => ({ ...DEFAULT_COMPOSER_PREFERENCES }));
+  const routeCapability = useAiRouteConfiguration(thinkingPurpose);
   const submittingRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -81,7 +92,7 @@ export function ChatComposer({
     setDraft({ scope: draftScope, value: loadDraft(draftScope) });
     setSubmitError(null);
     setGrowError(null);
-    setAllowWebSearch(false);
+    if (!preferences) setLocalPreferences({ ...DEFAULT_COMPOSER_PREFERENCES });
   }
 
   useEffect(() => {
@@ -94,7 +105,27 @@ export function ChatComposer({
   // "在此追问"需要输入内容；"深入研究这段"可以不带输入（选区文本自动进入子节点第一轮）
   const canAskInline = canSubmit;
   const canGrowNode = !disabled && !growingNode && hasCitation && Boolean(onStartChildNode);
-  const errorText = externalError ?? submitError ?? growError;
+  const composerPreferences = preferences ?? localPreferences;
+  const thinkingUnavailableReason = routeCapability.kind === "loading"
+    ? "正在读取当前模型能力。"
+    : routeCapability.kind === "failed"
+      ? "无法读取当前模型能力。"
+      : routeCapability.route.thinkingSupported
+        ? undefined
+        : routeCapability.route.unavailableReason
+          ?? ([routeCapability.route.provider, routeCapability.route.model].filter(Boolean).join(" · ")
+            ? `当前模型 ${[routeCapability.route.provider, routeCapability.route.model].filter(Boolean).join(" · ")} 不支持深度思考。`
+            : "当前模型能力未知，无法启用深度思考。");
+  const errorText = externalError ?? preferenceError ?? submitError ?? growError;
+
+  function setPreference(key: keyof ComposerPreferences, value: boolean) {
+    const next = { ...composerPreferences, [key]: value };
+    if (onPreferencesChange) {
+      void onPreferencesChange(next);
+    } else {
+      setLocalPreferences(next);
+    }
+  }
 
   /** 在此追问：携带引用选区作为上下文，在当前节点对话流中发送。 */
   async function submitInline() {
@@ -108,7 +139,7 @@ export function ChatComposer({
       const content = citedSelection
         ? `> ${citedSelection.text}\n\n${trimmed}`
         : trimmed;
-      const accepted = await onSubmit(content, allowWebSearch);
+      const accepted = await onSubmit(content, composerPreferences);
       if (accepted) {
         setDraft({ scope: draftScope, value: "" });
         clearDraft(draftScope);
@@ -129,7 +160,7 @@ export function ChatComposer({
     setGrowError(null);
     setSubmitError(null);
     try {
-      const accepted = await onStartChildNode(trimmed, allowWebSearch);
+      const accepted = await onStartChildNode(trimmed, composerPreferences);
       if (accepted) {
         setDraft({ scope: draftScope, value: "" });
         clearDraft(draftScope);
@@ -158,7 +189,7 @@ export function ChatComposer({
     setSubmitting(true);
     setSubmitError(null);
     try {
-      const accepted = await onSubmit(trimmed, allowWebSearch);
+      const accepted = await onSubmit(trimmed, composerPreferences);
       if (accepted) {
         setDraft({ scope: draftScope, value: "" });
         clearDraft(draftScope);
@@ -244,14 +275,38 @@ export function ChatComposer({
                 </svg>
               </button>
             )}
-            <label className="composer__web-search">
-              <input
-                type="checkbox"
-                checked={allowWebSearch}
-                onChange={(event) => setAllowWebSearch(event.target.checked)}
-              />
-              <span>允许联网搜索</span>
-            </label>
+            <button
+              type="button"
+              className={`composer__tool${composerPreferences.thinkingEnabled ? " composer__tool--active" : ""}`}
+              aria-pressed={composerPreferences.thinkingEnabled}
+              aria-label={thinkingUnavailableReason
+                ? `深度思考${composerPreferences.thinkingEnabled ? "偏好已开启" : "不可用"}：${thinkingUnavailableReason}`
+                : composerPreferences.thinkingEnabled ? "关闭深度思考" : "开启深度思考"}
+              data-tooltip={thinkingUnavailableReason ?? (composerPreferences.thinkingEnabled ? "关闭深度思考" : "开启深度思考")}
+              title={thinkingUnavailableReason ?? (composerPreferences.thinkingEnabled ? "关闭深度思考" : "开启深度思考")}
+              aria-disabled={Boolean(thinkingUnavailableReason)}
+              onClick={() => {
+                if (!thinkingUnavailableReason) setPreference("thinkingEnabled", !composerPreferences.thinkingEnabled);
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <path d="M7.2 15.2h5.6M8 17.2h4M6.2 12.8c-1.15-.95-1.85-2.38-1.85-3.95a5.65 5.65 0 0 1 11.3 0c0 1.57-.7 3-1.85 3.95-.62.52-.95 1.1-1.02 1.75H7.22c-.07-.65-.4-1.23-1.02-1.75Z" fill="none" stroke="currentColor" strokeWidth="1.45" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className={`composer__tool${composerPreferences.allowWebSearch ? " composer__tool--active" : ""}`}
+              aria-pressed={composerPreferences.allowWebSearch}
+              aria-label={composerPreferences.allowWebSearch ? "关闭联网搜索" : "开启联网搜索"}
+              data-tooltip={composerPreferences.allowWebSearch ? "关闭联网搜索" : "开启联网搜索"}
+              title={composerPreferences.allowWebSearch ? "关闭联网搜索" : "开启联网搜索"}
+              onClick={() => setPreference("allowWebSearch", !composerPreferences.allowWebSearch)}
+            >
+              <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <circle cx="10" cy="10" r="6.75" fill="none" stroke="currentColor" strokeWidth="1.45" />
+                <path d="M3.6 10h12.8M10 3.25c1.8 1.85 2.75 4.1 2.75 6.75S11.8 14.9 10 16.75C8.2 14.9 7.25 12.65 7.25 10S8.2 5.1 10 3.25Z" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+              </svg>
+            </button>
           </div>
           {generationTask && (generationTask.status === "queued" || generationTask.status === "running" || generationTask.status === "paused") ? (
             <ComposerGenerationControls

@@ -6,7 +6,7 @@ import { timingSafeEqual } from "node:crypto";
 const RESEARCH_SSE_REDRAIN_MS = 100;
 import { ValidationError, NotFoundError, CaptureService } from "./service.js";
 import { LocalAuth, PairingRateLimitError } from "./auth.js";
-import { RESEARCH_IMPORT_MAX_BYTES, validateCreateChildNodeInput, validateDeepResearchInput, validateProjectInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSearchInput, validateResearchSelectionInput, validateResearchSessionInput, validateResearchSessionUpdateInput, validateResearchTermPreviewGrowthInput, validateResearchTermPreviewInput, validateSemanticSearchCommand } from "@collector/capture-contracts";
+import { RESEARCH_IMPORT_MAX_BYTES, validateComposerPreferences, validateCreateChildNodeInput, validateDeepResearchInput, validateProjectInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSearchInput, validateResearchSelectionInput, validateResearchSessionInput, validateResearchSessionUpdateInput, validateResearchTermPreviewGrowthInput, validateResearchTermPreviewInput, validateSemanticSearchCommand } from "@collector/capture-contracts";
 import { ResearchNotFoundError, ResearchValidationError, ResearchConflictError } from "./research.js";
 import { ResearchImportConflictError, ResearchImportNotFoundError, ResearchImportValidationError } from "./research-import.js";
 import { ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionValidationError } from "./selection.js";
@@ -308,7 +308,10 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         catch (error) { throw new ResearchValidationError((error as Error).message); }
         const accepted = await service.research.submitMessage(
           decodeURIComponent(researchMessagesMatch[1]), body.content, header(request, "idempotency-key") ?? "",
-          { allowWebSearch: body.allowWebSearch === true },
+          {
+            ...(body.allowWebSearch !== undefined ? { allowWebSearch: body.allowWebSearch } : {}),
+            ...(body.thinkingEnabled !== undefined ? { thinkingEnabled: body.thinkingEnabled } : {}),
+          },
         );
         return json(response, 202, accepted);
       }
@@ -549,7 +552,10 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         catch (error) { throw new DeepResearchValidationError((error as Error).message); }
         const accepted = await service.deepResearch.submitBranchMessage(
           decodeURIComponent(researchBranchMessagesMatch[1]), body.content, header(request, "idempotency-key") ?? "",
-          { allowWebSearch: body.allowWebSearch === true },
+          {
+            ...(body.allowWebSearch !== undefined ? { allowWebSearch: body.allowWebSearch } : {}),
+            ...(body.thinkingEnabled !== undefined ? { thinkingEnabled: body.thinkingEnabled } : {}),
+          },
         );
         return json(response, 202, accepted);
       }
@@ -574,7 +580,10 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         catch (error) { throw new ResearchValidationError((error as Error).message); }
         const accepted = await service.research.submitMessageToNode(
           decodeURIComponent(researchNodeMessagesMatch[1]), body.content, header(request, "idempotency-key") ?? "",
-          { allowWebSearch: body.allowWebSearch === true },
+          {
+            ...(body.allowWebSearch !== undefined ? { allowWebSearch: body.allowWebSearch } : {}),
+            ...(body.thinkingEnabled !== undefined ? { thinkingEnabled: body.thinkingEnabled } : {}),
+          },
         );
         return json(response, 202, accepted);
       }
@@ -614,6 +623,15 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       const researchNodeMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)$/);
       if (request.method === "GET" && researchNodeMatch) {
         return json(response, 200, await service.getResearchNodeView(decodeURIComponent(researchNodeMatch[1])));
+      }
+      const researchNodePreferencesMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)\/composer-preferences$/);
+      if (request.method === "PUT" && researchNodePreferencesMatch) {
+        const body = await readJson(request);
+        try { validateComposerPreferences(body); }
+        catch (error) { throw new ResearchValidationError((error as Error).message); }
+        return json(response, 200, await service.updateResearchNodeComposerPreferences(
+          decodeURIComponent(researchNodePreferencesMatch[1]), body,
+        ));
       }
       const researchBodyVersionMatch = url.pathname.match(/^\/v1\/research-body-versions\/([^/]+)$/);
       if (request.method === "GET" && researchBodyVersionMatch) {
