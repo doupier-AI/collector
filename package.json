@@ -9,6 +9,7 @@
     "packages/*"
   ],
   "scripts": {
+    "prebuild": "node scripts/worktree-safety.mjs dependencies",
     "build": "tsc -b && npm run build -w @collector/web",
     "test": "npm run build && node --test dist-tests/**/*.test.js scripts/*.test.mjs && node scripts/run-answer-quality-release.mjs --mode=quick",
     "start": "node apps/api/dist/launcher-main.js",
@@ -34,6 +35,7 @@
     "probe:evidence-preparation": "npm run build && node scripts/probe-evidence-preparation.mjs",
     "probe:citation-attribution": "npm run build && node scripts/probe-citation-attribution.mjs",
     "clean": "node scripts/clean.mjs",
+    "worktree:prepare": "node scripts/worktree-safety.mjs prepare",
     "worktree:remove": "node scripts/worktree-safety.mjs remove",
     "run:logged": "node scripts/run-logged.mjs",
     "visual:diff": "node scripts/visual-review.mjs",

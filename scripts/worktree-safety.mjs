@@ -71,12 +71,26 @@ async function exists(path) {
   }
 }
 
-async function workspaceLinkIssues(root) {
+async function entryStat(path) {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+export async function dependencyIssues(root, { requireInstalled = true } = {}) {
   const issues = [];
   const modulesPath = join(root, "node_modules");
-  if (!(await exists(modulesPath))) return issues;
+  const modulesStat = await entryStat(modulesPath);
+  if (!modulesStat) {
+    if (requireInstalled) {
+      issues.push("dependencies-missing: node_modules is absent; run npm.cmd run worktree:prepare in this worktree");
+    }
+    return issues;
+  }
 
-  const modulesStat = await lstat(modulesPath);
   if (modulesStat.isSymbolicLink()) {
     issues.push("shared-node-modules: node_modules is a reparse point; every worktree must own its dependency tree");
     return issues;
@@ -102,6 +116,42 @@ async function workspaceLinkIssues(root) {
   return issues;
 }
 
+function sharedNpmCache(root) {
+  const commonGitDirectory = run("git", ["rev-parse", "--git-common-dir"], { cwd: root }).stdout.trim();
+  return join(dirname(resolve(root, commonGitDirectory)), ".npm-cache");
+}
+
+function npmInstallCommand(cache, npmExecPath = process.env.npm_execpath) {
+  if (npmExecPath) {
+    return { executable: process.execPath, args: [npmExecPath, "ci", "--cache", cache] };
+  }
+  return {
+    executable: process.platform === "win32" ? "cmd.exe" : "npm",
+    args: process.platform === "win32"
+      ? ["/d", "/s", "/c", `npm.cmd ci --cache "${cache.replaceAll('"', '""')}"`]
+      : ["ci", "--cache", cache],
+  };
+}
+
+export async function prepareWorktreeDependencies(root, { installRunner = run, npmExecPath } = {}) {
+  const resolvedRoot = resolve(root);
+  const unsafeIssues = (await dependencyIssues(resolvedRoot, { requireInstalled: false }))
+    .filter((issue) => issue.startsWith("shared-node-modules:") || issue.startsWith("workspace-link-external:"));
+  if (unsafeIssues.length > 0) {
+    throw new Error(`Refusing to replace unsafe dependencies:\n${unsafeIssues.join("\n")}`);
+  }
+
+  const cache = sharedNpmCache(resolvedRoot);
+  const install = npmInstallCommand(cache, npmExecPath ?? process.env.npm_execpath);
+  installRunner(install.executable, install.args, { cwd: resolvedRoot });
+
+  const remainingIssues = await dependencyIssues(resolvedRoot);
+  if (remainingIssues.length > 0) {
+    throw new Error(`Dependency preparation did not produce an isolated dependency tree:\n${remainingIssues.join("\n")}`);
+  }
+  return { root: resolvedRoot, cache };
+}
+
 export async function inspectRepository(root, { versionText } = {}) {
   const resolvedRoot = resolve(root);
   const issues = [];
@@ -119,7 +169,7 @@ export async function inspectRepository(root, { versionText } = {}) {
     issues.push(`tracked-files-missing: ${missing.length} tracked file(s) are absent: ${preview}${missing.length > 8 ? ", ..." : ""}`);
   }
 
-  issues.push(...await workspaceLinkIssues(resolvedRoot));
+  issues.push(...await dependencyIssues(resolvedRoot));
   return issues;
 }
 
@@ -196,6 +246,19 @@ async function main() {
     process.exitCode = issues.length === 0 ? 0 : 1;
     return;
   }
+  if (command === "dependencies") {
+    const root = argumentValue(args, "--root", scriptRoot);
+    const issues = await dependencyIssues(resolve(root));
+    for (const issue of issues) process.stderr.write(`${issue}\n`);
+    process.exitCode = issues.length === 0 ? 0 : 1;
+    return;
+  }
+  if (command === "prepare") {
+    const root = argumentValue(args, "--root", scriptRoot);
+    const result = await prepareWorktreeDependencies(root);
+    process.stdout.write(`Prepared isolated dependencies in ${result.root} using cache ${result.cache}.\n`);
+    return;
+  }
   if (command === "remove") {
     const target = argumentValue(args, "--path");
     if (!target) throw new Error("Usage: node scripts/worktree-safety.mjs remove --path <registered-worktree>");
@@ -203,7 +266,7 @@ async function main() {
     process.stdout.write(`Removed ${result.removed}; safely unlinked ${result.unlinkedReparsePoints} reparse point(s).\n`);
     return;
   }
-  throw new Error("Usage: node scripts/worktree-safety.mjs check [--root <repo>] | remove --path <registered-worktree>");
+  throw new Error("Usage: node scripts/worktree-safety.mjs check|dependencies|prepare [--root <repo>] | remove --path <registered-worktree>");
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

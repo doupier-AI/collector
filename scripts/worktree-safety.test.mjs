@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import {
+  dependencyIssues,
   gitVersionIssue,
   inspectRepository,
   parseGitForWindowsVersion,
+  prepareWorktreeDependencies,
   removeWorktreeSafely,
 } from "./worktree-safety.mjs";
 
@@ -45,6 +48,41 @@ test("repository inspection reports missing tracked files", async (t) => {
   await rm(join(main, "apps", "web", "sentinel.ts"));
   const issues = await inspectRepository(main, { versionText: "git version 2.53.0.windows.3" });
   assert.ok(issues.some((issue) => issue.includes("tracked-files-missing")));
+});
+
+test("dependency inspection reports an actionable preparation command", async (t) => {
+  const { base, main } = await fixture();
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const issues = await dependencyIssues(main);
+  assert.deepEqual(issues, [
+    "dependencies-missing: node_modules is absent; run npm.cmd run worktree:prepare in this worktree",
+  ]);
+});
+
+test("dependency preparation installs locally while sharing only the main npm cache", async (t) => {
+  const { base, main, review } = await fixture();
+  t.after(() => rm(base, { recursive: true, force: true }));
+  git(main, ["worktree", "add", "--detach", review, "HEAD"]);
+  let invocation;
+
+  const npmExecPath = join(main, "tools", "npm-cli.js");
+  const result = await prepareWorktreeDependencies(review, {
+    npmExecPath,
+    installRunner(executable, args, options) {
+      invocation = { executable, args, options };
+      mkdirSync(join(review, "node_modules"));
+      return { status: 0, stdout: "", stderr: "" };
+    },
+  });
+
+  const commonGitDirectory = git(review, ["rev-parse", "--git-common-dir"]).trim();
+  const expectedCache = join(dirname(resolve(review, commonGitDirectory)), ".npm-cache");
+  assert.equal(invocation.executable, process.execPath);
+  assert.deepEqual(invocation.args, [npmExecPath, "ci", "--cache", expectedCache]);
+  assert.equal(invocation.options.cwd, review);
+  assert.equal(result.root, review);
+  assert.equal(result.cache, expectedCache);
+  assert.deepEqual(await dependencyIssues(review), []);
 });
 
 test("repository inspection rejects a shared node_modules junction", {

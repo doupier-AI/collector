@@ -32,10 +32,11 @@ npm.cmd run gate
 在独立 worktree 中使用主工作区的现有研究数据预览当前分支：
 
 ```powershell
+npm.cmd run worktree:prepare
 npm.cmd run preview:from-main
 ```
 
-该命令把主工作区的 SQLite 和导入附件复制到当前 worktree 的 `.collector-data/preview`，移除模型凭证与浏览器配对，关闭自动任务和模型联网，然后启动当前分支。已有快照默认复用；需要重新取得主工作区数据时使用 `npm.cmd run preview:from-main -- --refresh`。快照中的编辑不会写回主工作区。
+依赖准备命令在当前 worktree 内执行 `npm ci`，创建独立 `node_modules`，并只复用主工作区的 `.npm-cache/` 下载缓存。随后，预览命令把主工作区的 SQLite 和导入附件复制到当前 worktree 的 `.collector-data/preview`，移除模型凭证与浏览器配对，关闭自动任务和模型联网，然后启动当前分支。已有快照默认复用；需要重新取得主工作区数据时使用 `npm.cmd run preview:from-main -- --refresh`。快照中的编辑不会写回主工作区。
 
 命令的真实行为以根 `package.json` 和脚本源码为准。
 
