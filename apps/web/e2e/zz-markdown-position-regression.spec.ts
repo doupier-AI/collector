@@ -18,6 +18,19 @@ test("共享 Markdown 夹具贯穿渲染、选择、引用、搜索与来源返�
   await expect(answer.locator("[data-term-marker]", { hasText: MARKDOWN_POSITION_FIXTURE.term.exact })).toHaveCount(1);
   await expect(answer.locator(".katex").first()).toBeVisible();
   await expect(answer.locator(".math-source-fallback__code")).toHaveText(MARKDOWN_POSITION_FIXTURE.formula.invalid);
+  await expect(answer.getByRole("heading", { name: MARKDOWN_POSITION_FIXTURE.list.heading })).toBeVisible();
+  const firstListItem = answer.locator("li").filter({ hasText: new RegExp(`^${MARKDOWN_POSITION_FIXTURE.list.first}$`) });
+  const secondListItem = answer.locator("li").filter({ hasText: new RegExp(`^${MARKDOWN_POSITION_FIXTURE.list.second}`) }).first();
+  const [firstBox, secondBox, margins] = await Promise.all([
+    firstListItem.boundingBox(),
+    secondListItem.boundingBox(),
+    Promise.all([firstListItem, secondListItem].map((item) => item.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return [style.marginTop, style.marginBottom];
+    }))),
+  ]);
+  expect(margins).toEqual([["0px", "0px"], ["0px", "0px"]]);
+  expect(firstBox && secondBox ? secondBox.y - (firstBox.y + firstBox.height) : Number.POSITIVE_INFINITY).toBeLessThanOrEqual(1);
   await expect(answer.locator("[data-citation-marker]")).toHaveCount(1);
   const citationLink = answer.getByRole("link", {
     name: `打开来源 1：${MARKDOWN_POSITION_FIXTURE.citation.sourceTitle}`,

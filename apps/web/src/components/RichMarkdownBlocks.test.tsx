@@ -32,6 +32,12 @@ beforeEach(() => {
 });
 
 describe("富 Markdown 块", () => {
+  it("把正文显式软换行渲染为语义 br，不依赖保留结构性空白", () => {
+    const { container } = render(<MarkdownContent text={"第一行\n第二行"} />);
+    expect(container.querySelector("p > br")).not.toBeNull();
+    expect(container.querySelector("p")).toHaveTextContent(/第一行\s+第二行/);
+  });
+
   it("保留连续段落、紧凑与嵌套列表以及多级标题的原生结构", () => {
     const { container } = render(<MarkdownContent text={`## 主章节
 

@@ -31,6 +31,14 @@ const body = [
   "### 来源返回",
   "",
   "搜索锚点：跨功能唯一定位词。",
+  "",
+  "### 紧凑列表",
+  "",
+  "- 第一项",
+  "",
+  "- 第二项",
+  "  - 子项一",
+  "  - 子项二",
 ].join("\n");
 
 export const MARKDOWN_POSITION_FIXTURE = Object.freeze({
@@ -53,5 +61,6 @@ export const MARKDOWN_POSITION_FIXTURE = Object.freeze({
     sourceRange: nthRange(body, "跨功能唯一定位词", 0),
   }),
   chapter: Object.freeze({ title: "来源返回" }),
+  list: Object.freeze({ heading: "紧凑列表", first: "第一项", second: "第二项" }),
   formula: Object.freeze({ valid: "E=mc^2", invalid: "\\frac{1}{" }),
 });

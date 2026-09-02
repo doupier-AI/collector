@@ -23,3 +23,22 @@ describe("研究图谱视觉参数", () => {
     expect(titleRule).toMatch(/opacity:\s*var\(--global-map-title-opacity/);
   });
 });
+
+describe("Markdown 列表间距", () => {
+  it("折叠 AST 结构性空白，显式换行交给语义 br 节点", () => {
+    const rootRule = css.match(/(?:^|\r?\n)\.markdown-content\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(rootRule).toMatch(/white-space:\s*normal/);
+  });
+
+  it("列表项无机械 margin，只有真实多段和嵌套列表获得关系型间距", () => {
+    const itemRule = css.match(/\.markdown-content :where\(li\)\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(itemRule).toMatch(/margin:\s*0/);
+    expect(css).toMatch(/\.markdown-content :where\(li > p\)\s*\{\s*margin:\s*0/);
+    expect(css).toMatch(/\.markdown-content :where\(li > p \+ p\)\s*\{\s*margin-top:\s*var\(--markdown-space-flow\)/);
+    expect(css).toMatch(/\.markdown-content :where\(li > ul, li > ol\)\s*\{\s*margin:\s*var\(--markdown-space-tight\) 0 0/);
+  });
+
+  it("仅缝合回答中相邻的纯列表块", () => {
+    expect(css).toMatch(/\.turn-card > \.message__content:has\(> \.markdown-content > :only-child:is\(ul, ol\)\)[\s\S]*\+ \.message__content:has\(> \.markdown-content > :only-child:is\(ul, ol\)\)[\s\S]*margin-top:\s*0/);
+  });
+});

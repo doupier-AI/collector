@@ -7237,6 +7237,9 @@ button.model-status {
   --markdown-space-flow: 0.75rem;
   --markdown-space-section: 1.5rem;
   line-height: 1.75;
+  /* Markdown 的显式换行已经由安全 AST 投影为 <br>。这里折叠渲染器为语义结构
+     生成的换行文本，避免它们在继承的 pre-wrap 下变成列表内的可见空行。 */
+  white-space: normal;
   overflow-wrap: anywhere;
 }
 
@@ -7281,11 +7284,31 @@ button.model-status {
 }
 
 .markdown-content :where(li) {
-  margin: var(--markdown-space-tight) 0;
+  margin: 0;
 }
 
 .markdown-content :where(li > p) { margin: 0; }
-.markdown-content :where(li > ul, li > ol) { margin: var(--markdown-space-tight) 0; }
+.markdown-content :where(li > p + p) { margin-top: var(--markdown-space-flow); }
+.markdown-content :where(li > ul, li > ol) { margin: var(--markdown-space-tight) 0 0; }
+
+/* 稳定选区锚点要求回答仍按空行保留 message block。Markdown 的松散列表因此可能
+   被呈现为相邻的 list-only block；只缝合这种确定关系，避免结构性空行变成可见空行。 */
+.turn-card > .message__content:has(> .markdown-content > :only-child:is(ul, ol))
+  + .message__content:has(> .markdown-content > :only-child:is(ul, ol))
+  > .markdown-content > :only-child:is(ul, ol) {
+  margin-top: 0;
+}
+
+.turn-card > .message__content:has(> .markdown-content > :only-child:is(ul, ol))
+  :is(ul, ol):only-child {
+  margin-bottom: 0;
+}
+
+.turn-card > .message__content:has(> .markdown-content > :only-child:is(ul, ol))
+  + .message__content:not(:has(> .markdown-content > :only-child:is(ul, ol)))
+  > .markdown-content > :first-child {
+  margin-top: var(--markdown-space-flow);
+}
 
 .markdown-content :where(code) {
   padding: 0.0625rem 0.25rem;

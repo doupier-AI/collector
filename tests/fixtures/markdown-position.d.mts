@@ -23,6 +23,7 @@ export interface MarkdownPositionFixture {
     readonly sourceRange: MarkdownPositionFixtureRange;
   };
   readonly chapter: { readonly title: string };
+  readonly list: { readonly heading: string; readonly first: string; readonly second: string };
   readonly formula: { readonly valid: string; readonly invalid: string };
 }
 
